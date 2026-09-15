@@ -51,9 +51,9 @@ export function parseMessage(raw) {
   let dm = dateLine.match(/(\d{1,2})\s*\/\s*(\d{1,2})/)
   if (dm) o.date = dm[1] + '/' + dm[2]
 
-  // บล็อกลูกค้า = บรรทัดที่ไม่ใช่คำทักทาย/สรุป
+  // บล็อกลูกค้า = บรรทัดที่ไม่ใช่คำทักทาย/สรุป/เลขลำดับ
   const summaryRe = /(^ขอบคุณ|แอค|สถานะ|ส่ง.*วันที่|วันที่ส่ง|^วันส่ง|ส่งของ)/
-  let block = lines.filter((l) => l && !summaryRe.test(l)).join(' ')
+  let block = lines.filter((l) => l && !summaryRe.test(l) && !/^\d+[.)]?$/.test(l)).join(' ')
 
   if (block.trim()) {
     o.phone = extractPhones(block).join(' / ')
@@ -88,6 +88,27 @@ export function parseMessage(raw) {
 
   return o
 }
+
+// แยกข้อความหลายออเดอร์ที่ก๊อปมาต่อกัน (คั่นด้วยเลข 1. 2. หรือคำทักทายซ้ำ)
+export function splitOrders(raw) {
+  const cleaned = raw.replace(/\r/g, '').replace(/^\s*\d+[.)]\s*$/gm, '')
+  const lines = cleaned.split('\n')
+  const starts = []
+  lines.forEach((l, i) => {
+    if (/แอค[^\n]*[:：]/.test(l)) starts.push(i)
+  })
+  if (starts.length <= 1) {
+    const t = cleaned.trim()
+    return t ? [t] : []
+  }
+  const blocks = []
+  for (let k = 0; k < starts.length; k++) {
+    const s = starts[k]
+    const e = k + 1 < starts.length ? starts[k + 1] : lines.length
+    blocks.push(lines.slice(s, e).join('\n'))
+  }
+  return blocks
+}
 /* ========================================================= */
 
 const BLANK = { tiktok: '', qty: 1, type: '', date: '', name: '', phone: '', addr: '', note: '' }
@@ -117,6 +138,35 @@ export default function SnailOrderForm() {
       note: o.note === '-' ? '' : o.note,
     })
     setFlash({ msg: '✅ แยกข้อมูลแล้ว — เช็กความถูกต้องแล้วกด “เพิ่มลงตาราง”', ok: true })
+  }
+
+  function addManyFromPaste() {
+    if (!paste.trim()) {
+      setFlash({ msg: 'ยังไม่มีข้อความให้แยก วางข้อความก่อนนะคะ', ok: false })
+      return
+    }
+    const blocks = splitOrders(paste)
+    const parsed = blocks
+      .map((b) => parseMessage(b))
+      .filter((o) => o.tiktok || o.name || o.qty)
+      .map((o) => ({
+        tiktok: o.tiktok,
+        qty: parseInt(o.qty) || 1,
+        type: o.type,
+        date: o.date,
+        name: o.name,
+        phone: o.phone,
+        addr: o.addr,
+        note: o.note || '-',
+      }))
+    if (parsed.length === 0) {
+      setFlash({ msg: 'แยกไม่ได้ ลองเช็กว่ามีบรรทัด “แอคเค้าตต :” ในแต่ละคนไหม', ok: false })
+      return
+    }
+    setOrders([...orders, ...parsed])
+    setForm({ ...BLANK })
+    setPaste('')
+    setFlash({ msg: `✅ เพิ่ม ${parsed.length} ออเดอร์เข้าตารางแล้ว — เลื่อนไปเช็ก/แก้ในตารางได้`, ok: true })
   }
 
   function addOrder() {
@@ -184,13 +234,14 @@ export default function SnailOrderForm() {
             <textarea
               value={paste}
               onChange={(e) => setPaste(e.target.value)}
-              placeholder="คัดลอกทั้งข้อความ (ทั้งส่วนสรุป + ที่อยู่) มาวางตรงนี้..."
+              placeholder="วาง 1 คน หรือหลายคนต่อกันก็ได้ (มีเลข 1. 2. 3. คั่นหรือไม่มีก็ได้)..."
             />
             <div className="paste-row">
-              <button className="btn btn-primary" onClick={fillFromPaste}>🪄 แยกข้อมูลให้</button>
-              <button className="btn btn-ghost" onClick={() => { setPaste(''); setFlash({ msg: '', ok: true }) }}>ล้างช่องวาง</button>
+              <button className="btn btn-ghost" onClick={fillFromPaste}>🪄 แยก 1 คน (เช็กก่อน)</button>
+              <button className="btn btn-primary" onClick={addManyFromPaste}>📥 เพิ่มหลายคนทีเดียว</button>
             </div>
             <p className="parsed-flash" style={{ color: flash.ok ? 'var(--ok)' : 'var(--pink-deep)' }}>{flash.msg}</p>
+            <p className="mini-clear" onClick={() => { setPaste(''); setFlash({ msg: '', ok: true }) }}>ล้างช่องวาง</p>
           </div>
 
           <div className="divider">แล้วเช็ก / แก้ไขได้ที่นี่</div>
