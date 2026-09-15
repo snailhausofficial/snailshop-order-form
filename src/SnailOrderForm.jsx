@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { supabase, TABLE } from './supabase'
 
 /* ================= ตัวแยกข้อความอัตโนมัติ ================= */
 const PHONE = /(?<!\d)0[\d\-\s]{7,13}\d/g
@@ -118,8 +119,67 @@ export default function SnailOrderForm() {
   const [form, setForm] = useState({ ...BLANK })
   const [paste, setPaste] = useState('')
   const [flash, setFlash] = useState({ msg: '', ok: true })
+  const [busy, setBusy] = useState(false)
+  const [copyText, setCopyText] = useState('')
+
+  const online = !!supabase // ต่อ Supabase อยู่ไหม
+
+  // แปลงแถวจาก DB -> รูปแบบที่แอปใช้
+  const fromRow = (r) => ({
+    id: r.id,
+    tiktok: r.tiktok || '',
+    qty: r.qty || 1,
+    type: r.type || '',
+    date: r.send_date || '',
+    name: r.name || '',
+    phone: r.phone || '',
+    addr: r.addr || '',
+    note: r.note || '-',
+  })
+  // แปลงออเดอร์ในแอป -> แถวสำหรับ DB
+  const toRow = (o) => ({
+    tiktok: o.tiktok,
+    qty: o.qty,
+    type: o.type,
+    send_date: o.date,
+    name: o.name,
+    phone: o.phone,
+    addr: o.addr,
+    note: o.note,
+  })
+
+  // โหลดออเดอร์ที่บันทึกไว้ตอนเปิดเว็บ
+  useEffect(() => {
+    if (!online) return
+    ;(async () => {
+      const { data, error } = await supabase.from(TABLE).select('*').order('created_at', { ascending: true })
+      if (error) {
+        setFlash({ msg: 'โหลดข้อมูลจากฐานข้อมูลไม่ได้: ' + error.message, ok: false })
+        return
+      }
+      setOrders((data || []).map(fromRow))
+    })()
+  }, [online])
 
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value })
+
+  // บันทึกออเดอร์ (1 หรือหลายตัว) — ลง DB ถ้าออนไลน์ ไม่งั้นเก็บในหน้า
+  async function saveOrders(list) {
+    if (!online) {
+      const withId = list.map((o) => ({ ...o, id: 'local-' + Date.now() + Math.random() }))
+      setOrders((prev) => [...prev, ...withId])
+      return withId.length
+    }
+    setBusy(true)
+    const { data, error } = await supabase.from(TABLE).insert(list.map(toRow)).select()
+    setBusy(false)
+    if (error) {
+      setFlash({ msg: 'บันทึกไม่สำเร็จ: ' + error.message, ok: false })
+      return 0
+    }
+    setOrders((prev) => [...prev, ...(data || []).map(fromRow)])
+    return (data || []).length
+  }
 
   function fillFromPaste() {
     if (!paste.trim()) {
@@ -140,13 +200,12 @@ export default function SnailOrderForm() {
     setFlash({ msg: '✅ แยกข้อมูลแล้ว — เช็กความถูกต้องแล้วกด “เพิ่มลงตาราง”', ok: true })
   }
 
-  function addManyFromPaste() {
+  async function addManyFromPaste() {
     if (!paste.trim()) {
       setFlash({ msg: 'ยังไม่มีข้อความให้แยก วางข้อความก่อนนะคะ', ok: false })
       return
     }
-    const blocks = splitOrders(paste)
-    const parsed = blocks
+    const parsed = splitOrders(paste)
       .map((b) => parseMessage(b))
       .filter((o) => o.tiktok || o.name || o.qty)
       .map((o) => ({
@@ -163,13 +222,15 @@ export default function SnailOrderForm() {
       setFlash({ msg: 'แยกไม่ได้ ลองเช็กว่ามีบรรทัด “แอคเค้าตต :” ในแต่ละคนไหม', ok: false })
       return
     }
-    setOrders([...orders, ...parsed])
-    setForm({ ...BLANK })
-    setPaste('')
-    setFlash({ msg: `✅ เพิ่ม ${parsed.length} ออเดอร์เข้าตารางแล้ว — เลื่อนไปเช็ก/แก้ในตารางได้`, ok: true })
+    const n = await saveOrders(parsed)
+    if (n > 0) {
+      setForm({ ...BLANK })
+      setPaste('')
+      setFlash({ msg: `✅ เพิ่ม ${n} ออเดอร์แล้ว${online ? ' (บันทึกลงฐานข้อมูล)' : ''}`, ok: true })
+    }
   }
 
-  function addOrder() {
+  async function addOrder() {
     const tiktok = form.tiktok.trim()
     const name = form.name.trim()
     if (!tiktok && !name) {
@@ -186,21 +247,43 @@ export default function SnailOrderForm() {
       addr: form.addr.trim(),
       note: form.note.trim() || '-',
     }
-    setOrders([...orders, o])
-    // เก็บวันส่งไว้ให้กรอกต่อเร็วขึ้น (มักส่งวันเดียวกันหลายคน)
-    setForm({ ...BLANK, date: form.date, qty: 1 })
-    setPaste('')
-    setFlash({ msg: '', ok: true })
+    const n = await saveOrders([o])
+    if (n > 0) {
+      // เก็บวันส่งไว้ให้กรอกต่อเร็วขึ้น (มักส่งวันเดียวกันหลายคน)
+      setForm({ ...BLANK, date: form.date, qty: 1 })
+      setPaste('')
+      setFlash({ msg: '', ok: true })
+    }
   }
 
-  const del = (i) => setOrders(orders.filter((_, idx) => idx !== i))
-  const clearAll = () => {
-    if (confirm('ล้างออเดอร์ทั้งหมด?')) setOrders([])
+  async function del(i) {
+    const row = orders[i]
+    if (online && row?.id) {
+      const { error } = await supabase.from(TABLE).delete().eq('id', row.id)
+      if (error) {
+        setFlash({ msg: 'ลบไม่สำเร็จ: ' + error.message, ok: false })
+        return
+      }
+    }
+    setOrders(orders.filter((_, idx) => idx !== i))
   }
+
+  async function clearAll() {
+    if (!confirm('ล้างออเดอร์ทั้งหมด? (ลบถาวรจากฐานข้อมูลด้วย)')) return
+    if (online) {
+      const { error } = await supabase.from(TABLE).delete().neq('id', '00000000-0000-0000-0000-000000000000')
+      if (error) {
+        setFlash({ msg: 'ล้างไม่สำเร็จ: ' + error.message, ok: false })
+        return
+      }
+    }
+    setOrders([])
+  }
+
   const loadDemo = () =>
     setOrders([
-      { tiktok: '@ปาล์มที่ชอบไปเที่ยว', qty: 4, type: '', date: '15/09', name: 'วริศรา บุญนิยม', phone: '0617215185', addr: 'เลขที่ 30/13 ซอยสำเร็จพัฒนา13 ตำบลปลายบาง อำเภอบางกรวย จังหวัดนนทบุรี 1113', note: '401' },
-      { tiktok: 'baifern_beauty', qty: 1, type: 'เหลี่ยมยาว', date: '15/09', name: 'ใบเฟิร์น สวยงาม', phone: '089-999-1111 / 086-222-3333', addr: '12 ม.5 ต.บางพูด อ.ปากเกร็ด จ.นนทบุรี 11120', note: 'กล่อง' },
+      { id: 'demo1', tiktok: '@ปาล์มที่ชอบไปเที่ยว', qty: 4, type: '', date: '15/09', name: 'วริศรา บุญนิยม', phone: '0617215185', addr: 'เลขที่ 30/13 ซอยสำเร็จพัฒนา13 ตำบลปลายบาง อำเภอบางกรวย จังหวัดนนทบุรี 1113', note: '401' },
+      { id: 'demo2', tiktok: 'baifern_beauty', qty: 1, type: 'เหลี่ยมยาว', date: '15/09', name: 'ใบเฟิร์น สวยงาม', phone: '089-999-1111 / 086-222-3333', addr: '12 ม.5 ต.บางพูด อ.ปากเกร็ด จ.นนทบุรี 11120', note: 'กล่อง' },
     ])
 
   function printLabels() {
@@ -211,6 +294,41 @@ export default function SnailOrderForm() {
     window.print()
   }
 
+  // สร้างข้อความสำหรับก๊อปไปวางในแอปปริ้น (Peripage)
+  function buildText(withAddr) {
+    const date = orders.find((o) => o.date)?.date || ''
+    const total = orders.reduce((s, o) => s + o.qty, 0)
+    let out = `วันที่ส่ง ${date}\n========================\n\n`
+    orders.forEach((o, i) => {
+      const noteStr = o.note && o.note !== '-' ? ` + ${o.note}` : ''
+      const who = o.tiktok || o.name || '-'
+      out += `${i + 1}. ${who} | ${o.qty} ชุด${noteStr}\n`
+      if (withAddr) {
+        const line = [o.name, o.addr, o.phone].filter(Boolean).join(' ')
+        if (line) out += `${line}\n`
+      }
+      out += `\n`
+    })
+    out += `========================\n📦 สรุป วันที่ ${date}\n`
+    out += `ออเดอร์: ${orders.length} ราย\nจำนวนชุดรวม: ${total} ชุด\n\nหมายเหตุ: -`
+    return out
+  }
+
+  async function copyForPrint(withAddr) {
+    if (orders.length === 0) {
+      setFlash({ msg: 'ยังไม่มีออเดอร์ให้คัดลอกค่ะ 🐌', ok: false })
+      return
+    }
+    const text = buildText(withAddr)
+    setCopyText(text)
+    try {
+      await navigator.clipboard.writeText(text)
+      setFlash({ msg: '📋 คัดลอกแล้ว — เปิดแอป Peripage แล้ววาง (paste) ได้เลย', ok: true })
+    } catch {
+      setFlash({ msg: 'คัดลอกอัตโนมัติไม่ได้ — กดค้างในช่องข้างล่างแล้วก๊อปเองได้', ok: false })
+    }
+  }
+
   const total = orders.reduce((s, o) => s + o.qty, 0)
 
   return (
@@ -218,9 +336,12 @@ export default function SnailOrderForm() {
       <header>
         <span className="snail">🐌</span>
         <div>
-          <h1>Snail Rumruay Mai</h1>
+          <h1>SnailShop</h1>
           <p>ฟอร์มกรอกออเดอร์ — เล็บปลอม Handmade</p>
         </div>
+        <span className={'conn ' + (online ? 'on' : 'off')}>
+          {online ? '● บันทึกลงฐานข้อมูล' : '○ โหมดทดลอง (ยังไม่ต่อฐานข้อมูล)'}
+        </span>
       </header>
 
       <div className="wrap">
@@ -293,7 +414,11 @@ export default function SnailOrderForm() {
           </div>
 
           <button className="btn btn-primary" onClick={addOrder}>🐌 เพิ่มลงตาราง</button>
-          <p className="save-note">* ข้อมูลเก็บชั่วคราวในหน้านี้ (ต่อ Supabase เพื่อบันทึกถาวรได้)</p>
+          <p className="save-note">
+            {online
+              ? '* บันทึกลง Supabase อัตโนมัติ — เปิดเครื่องไหนก็เห็นตารางเดียวกัน'
+              : '* ยังไม่ได้ต่อฐานข้อมูล (ตั้งค่า env ใน Vercel) ตอนนี้ข้อมูลอยู่ชั่วคราวในหน้า'}
+          </p>
         </section>
 
         {/* ===== TABLE ===== */}
@@ -301,11 +426,23 @@ export default function SnailOrderForm() {
           <div className="list-head">
             <h2 style={{ margin: 0 }}>📋 ออเดอร์วันนี้ <span className="pill">{orders.length} ออเดอร์</span></h2>
             <div className="toolbar no-print">
+              <button className="btn btn-ghost btn-sm" onClick={() => copyForPrint(true)}>📋 คัดลอก (มีที่อยู่)</button>
+              <button className="btn btn-ghost btn-sm" onClick={() => copyForPrint(false)}>📋 คัดลอก (สรุป)</button>
               <button className="btn btn-ghost btn-sm" onClick={printLabels}>🖨️ ปริ้นใบปะหน้า</button>
               <button className="btn btn-ghost btn-sm" onClick={loadDemo}>✨ ใส่ตัวอย่าง</button>
               <button className="btn btn-ghost btn-sm" onClick={clearAll}>🗑️ ล้างทั้งหมด</button>
             </div>
           </div>
+
+          {copyText && (
+            <div className="copy-box no-print">
+              <div className="copy-head">
+                <span>ข้อความสำหรับวางในแอปปริ้น (Peripage)</span>
+                <button className="mini-x" onClick={() => setCopyText('')}>✕ ปิด</button>
+              </div>
+              <textarea readOnly value={copyText} onFocus={(e) => e.target.select()} />
+            </div>
+          )}
 
           {orders.length === 0 ? (
             <div className="empty">
@@ -323,7 +460,7 @@ export default function SnailOrderForm() {
                 </thead>
                 <tbody>
                   {orders.map((o, i) => (
-                    <tr key={i}>
+                    <tr key={o.id ?? i}>
                       <td className="acc">{o.tiktok || '—'}</td>
                       <td className="qty">{o.qty}</td>
                       <td>{o.note && o.note !== '-' ? <span className="note-tag">{o.note}</span> : '-'}</td>
@@ -353,14 +490,14 @@ export default function SnailOrderForm() {
       {/* ===== PRINT LABELS ===== */}
       <div className="print-area">
         {orders.map((o, i) => (
-          <div className="label" key={i}>
+          <div className="label" key={o.id ?? i}>
             <div className="lbl-top">
-              <span className="lbl-brand">🐌 Snail Rumruay Mai</span>
+              <span className="lbl-brand">🐌 SnailShop</span>
               <span>ส่ง: {o.date || '-'}</span>
             </div>
             <div className="lbl-sec">
               <div className="k">ผู้ส่ง</div>
-              <div className="v">Snail Rumruay Mai (เล็บปลอม Handmade)</div>
+              <div className="v">SnailShop (เล็บปลอม Handmade)</div>
             </div>
             <div className="lbl-sec">
               <div className="k">ผู้รับ</div>

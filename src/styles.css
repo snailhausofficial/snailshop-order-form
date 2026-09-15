@@ -30,6 +30,11 @@ header{
 .snail{font-size:38px;line-height:1;filter:drop-shadow(0 2px 3px rgba(0,0,0,.15))}
 header h1{font-size:24px;letter-spacing:.3px}
 header p{font-size:14px;opacity:.9;font-weight:400}
+.conn{margin-left:auto;font-size:12px;font-weight:600;padding:5px 12px;
+  border-radius:999px;white-space:nowrap}
+.conn.on{background:rgba(255,255,255,.22)}
+.conn.off{background:rgba(0,0,0,.18)}
+@media(max-width:520px){.conn{display:none}}
 
 /* ---------- layout ---------- */
 .wrap{max-width:1180px;margin:0 auto;padding:26px;
@@ -68,6 +73,18 @@ input:focus,textarea:focus,select:focus{
 .btn-ghost:hover{background:var(--row)}
 .btn-sm{padding:7px 12px;font-size:13px;border-radius:9px}
 
+/* ---------- copy box (สำหรับแอปปริ้น) ---------- */
+.copy-box{background:#FFF9FC;border:1.5px solid var(--pink);border-radius:12px;
+  padding:12px;margin-bottom:16px}
+.copy-head{display:flex;justify-content:space-between;align-items:center;
+  font-size:13px;font-weight:600;color:var(--pink-deep);margin-bottom:8px}
+.mini-x{border:none;background:none;color:var(--muted);cursor:pointer;font-size:12px}
+.mini-x:hover{color:var(--pink-deep)}
+.copy-box textarea{width:100%;min-height:200px;border:1px solid var(--line);
+  border-radius:8px;padding:10px;background:#fff;color:var(--ink);
+  font-family:'JetBrains Mono','Sarabun',monospace;font-size:13px;line-height:1.5;
+  white-space:pre;overflow:auto}
+
 /* ---------- paste box ---------- */
 .paste-wrap{background:var(--row);border:1.5px dashed var(--pink);
   border-radius:14px;padding:14px;margin-bottom:18px}
@@ -76,6 +93,9 @@ input:focus,textarea:focus,select:focus{
 .paste-row{display:flex;gap:8px;margin-top:10px}
 .paste-row .btn{flex:1}
 .parsed-flash{font-size:12px;font-weight:600;margin-top:9px;text-align:center;min-height:16px}
+.mini-clear{font-size:12px;color:var(--muted);text-align:center;margin-top:6px;
+  cursor:pointer;text-decoration:underline}
+.mini-clear:hover{color:var(--pink-deep)}
 .divider{display:flex;align-items:center;gap:12px;color:var(--muted);
   font-size:12px;margin:2px 0 16px}
 .divider::before,.divider::after{content:'';flex:1;height:1px;background:var(--line)}
@@ -112,16 +132,29 @@ tfoot td{padding:13px 12px;font-family:'Mitr',sans-serif;font-weight:600;
   font-size:14px;font-weight:500;padding:6px 14px;border-radius:999px;
   border:1px solid var(--line)}
 
-/* ---------- print labels ---------- */
+/* ---------- print labels (Peripage 58mm ต่อเนื่อง) ---------- */
 .print-area{display:none}
 @media print{
-  body{background:#fff}
+  /* กระดาษความร้อนกว้าง 58 มม. ไม่มีขอบ ไม่ขึ้นหน้าใหม่ */
+  @page{size:58mm auto;margin:0}
+  html,body{background:#fff;margin:0;padding:0;width:58mm}
   header,.form-card,.no-print{display:none!important}
-  .wrap{display:block;padding:0;max-width:none}
-  .print-area{display:block}
-  .label{page-break-after:always;border:2px solid #000;border-radius:0;
-    padding:18px;margin:0;font-family:'Sarabun',sans-serif;color:#000}
-  .label:last-child{page-break-after:auto}
+  .wrap{display:block;padding:0;margin:0;max-width:none}
+  .print-area{display:block;width:58mm}
+  .label{
+    page-break-after:auto;          /* ต่อกันไม่เปลืองกระดาษ */
+    break-inside:avoid;             /* ไม่ตัดกลางใบ */
+    border:none;border-bottom:1px dashed #000;border-radius:0;
+    padding:6px 4px 8px;margin:0;color:#000;
+    font-family:'Sarabun','TH Sarabun New',sans-serif;
+  }
+  .label:last-child{border-bottom:none}
+  .lbl-top{border-bottom:1px solid #000;padding-bottom:4px;margin-bottom:5px}
+  .lbl-brand{font-size:13px}
+  .lbl-sec{margin-bottom:5px}
+  .lbl-sec .k{font-size:10px}
+  .lbl-sec .v{font-size:12px;line-height:1.35}
+  .lbl-items{padding-top:4px;font-size:11px;flex-direction:column;gap:2px}
 }
 .label{border:1.5px dashed var(--line);border-radius:12px;padding:16px;margin-bottom:14px}
 .lbl-top{display:flex;justify-content:space-between;border-bottom:1.5px solid #000;
