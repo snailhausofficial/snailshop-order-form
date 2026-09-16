@@ -283,10 +283,21 @@ export default function SnailOrderForm() {
     }
   }
 
-  async function copyLink(code) {
+  async function copyLink(o) {
+    let code = o.code
     if (!code) {
-      setFlash({ msg: 'ออเดอร์นี้ยังไม่มีลิงก์ (ต่อ Supabase ก่อน)', ok: false })
-      return
+      if (!online) {
+        setFlash({ msg: 'ยังไม่ได้ต่อฐานข้อมูล — ลิงก์ใช้ได้เมื่อเชื่อม Supabase แล้ว', ok: false })
+        return
+      }
+      // ออเดอร์เก่ายังไม่มีเลข → สร้างให้แล้วบันทึกลงฐานข้อมูล
+      code = genOrderCode()
+      const { error } = await supabase.from(TABLE).update({ code }).eq('id', o.id)
+      if (error) {
+        setFlash({ msg: 'สร้างลิงก์ไม่สำเร็จ: ' + error.message, ok: false })
+        return
+      }
+      setOrders((prev) => prev.map((x) => (x === o ? { ...x, code } : x)))
     }
     const link = `${window.location.origin}/ord/${code}`
     try {
@@ -590,7 +601,7 @@ export default function SnailOrderForm() {
                         </select>
                       </td>
                       <td className="no-print">
-                        <button className="icon-btn" title={o.code ? 'คัดลอกลิงก์ ' + o.code : 'ยังไม่มีลิงก์'} onClick={() => copyLink(o.code)}>🔗</button>
+                        <button className="icon-btn" title={o.code ? 'คัดลอกลิงก์ ' + o.code : 'สร้าง+คัดลอกลิงก์'} onClick={() => copyLink(o)}>🔗</button>
                       </td>
                       <td className="row-actions no-print">
                         <button className="icon-btn" title="ลบ" onClick={() => del(o)}>✕</button>
