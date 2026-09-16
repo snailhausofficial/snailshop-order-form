@@ -234,3 +234,18 @@ tfoot td{padding:13px 12px;font-family:'Mitr',sans-serif;font-weight:600;
 .track-tag{font-size:11px;color:#0a7a3f;font-weight:600;margin-top:3px;white-space:nowrap}
 .ord-acc{font-size:14px;color:var(--ink);margin:-8px 0 16px}
 .ord-acc b{color:var(--pink-deep);font-weight:700}
+
+/* ---------- lock screen (พนักงาน) ---------- */
+.lock-wrap{min-height:100vh;background:var(--paper);display:flex;align-items:center;justify-content:center;padding:20px}
+.lock-card{background:#fff;border:1px solid var(--line);border-radius:20px;padding:34px 28px;
+  box-shadow:0 10px 34px rgba(194,24,91,.08);text-align:center;width:100%;max-width:340px}
+.lock-snail{font-size:46px;margin-bottom:6px}
+.lock-card h1{font-family:'Mitr',sans-serif;font-size:24px;color:var(--pink-deep)}
+.lock-card p{color:var(--muted);font-size:14px;margin-bottom:20px}
+.lock-card input{width:100%;font-family:'Sarabun',sans-serif;font-size:16px;text-align:center;
+  border:1.5px solid var(--line);border-radius:11px;padding:12px;margin-bottom:12px;letter-spacing:2px}
+.lock-card input:focus{outline:none;border-color:var(--pink);box-shadow:0 0 0 3px rgba(255,105,180,.18)}
+.lock-err{color:var(--pink-deep);font-size:13px;margin-bottom:10px}
+.logout-btn{margin-left:10px;background:rgba(255,255,255,.2);color:#fff;border:none;
+  border-radius:999px;padding:5px 14px;font-family:'Mitr',sans-serif;font-size:12px;cursor:pointer}
+.logout-btn:hover{background:rgba(0,0,0,.15)}

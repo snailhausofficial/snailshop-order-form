@@ -122,6 +122,35 @@ export default function SnailOrderForm() {
   const [filterDate, setFilterDate] = useState('') // '' = ทั้งหมด
   const [trackText, setTrackText] = useState('')
   const [showTrack, setShowTrack] = useState(false)
+  const [unlocked, setUnlocked] = useState(() => {
+    try {
+      return localStorage.getItem('snail_admin_ok') === '1'
+    } catch {
+      return false
+    }
+  })
+  const [pw, setPw] = useState('')
+  const [lockErr, setLockErr] = useState(false)
+
+  const ADMIN_CODE = import.meta.env.VITE_ADMIN_CODE || 'snailshop'
+  function tryUnlock() {
+    if (pw === ADMIN_CODE) {
+      try {
+        localStorage.setItem('snail_admin_ok', '1')
+      } catch {}
+      setUnlocked(true)
+      setLockErr(false)
+    } else {
+      setLockErr(true)
+    }
+  }
+  function logout() {
+    try {
+      localStorage.removeItem('snail_admin_ok')
+    } catch {}
+    setUnlocked(false)
+    setPw('')
+  }
 
   const online = !!supabase
 
@@ -154,7 +183,7 @@ export default function SnailOrderForm() {
   })
 
   useEffect(() => {
-    if (!online) return
+    if (!online || !unlocked) return
     ;(async () => {
       const { data, error } = await supabase.from(TABLE).select('*').order('created_at', { ascending: true })
       if (error) {
@@ -167,7 +196,7 @@ export default function SnailOrderForm() {
       const latest = rows.length ? rows[rows.length - 1].date : ''
       if (latest) setFilterDate(latest)
     })()
-  }, [online])
+  }, [online, unlocked])
 
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value })
 
@@ -429,6 +458,28 @@ export default function SnailOrderForm() {
     }
   }
 
+  if (!unlocked) {
+    return (
+      <div className="lock-wrap">
+        <div className="lock-card">
+          <div className="lock-snail">🐌</div>
+          <h1>SnailShop</h1>
+          <p>สำหรับพนักงานเท่านั้น</p>
+          <input
+            type="password"
+            value={pw}
+            onChange={(e) => { setPw(e.target.value); setLockErr(false) }}
+            onKeyDown={(e) => { if (e.key === 'Enter') tryUnlock() }}
+            placeholder="ใส่รหัสผ่าน"
+            autoFocus
+          />
+          {lockErr && <div className="lock-err">รหัสไม่ถูกต้อง ลองใหม่นะคะ</div>}
+          <button className="btn btn-primary" onClick={tryUnlock}>เข้าใช้งาน</button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <>
       <header>
@@ -440,6 +491,7 @@ export default function SnailOrderForm() {
         <span className={'conn ' + (online ? 'on' : 'off')}>
           {online ? '● บันทึกลงฐานข้อมูล' : '○ โหมดทดลอง (ยังไม่ต่อฐานข้อมูล)'}
         </span>
+        <button className="logout-btn no-print" onClick={logout} title="ออกจากระบบ">ออก</button>
       </header>
 
       <div className="wrap">

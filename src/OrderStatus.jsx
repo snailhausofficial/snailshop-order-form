@@ -2,8 +2,8 @@ import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { supabase, TABLE, STATUSES } from './supabase'
 
-// แก้ LINE ร้านตรงนี้ได้ (ใส่ไอดี LINE OA ของร้าน)
-const SHOP_LINE = 'https://lin.ee/'
+// LINE OA ของร้าน (ลูกค้ากดสอบถาม)
+const SHOP_LINE = 'https://line.me/R/ti/p/@snailshop'
 
 export default function OrderStatus() {
   const { code } = useParams()
