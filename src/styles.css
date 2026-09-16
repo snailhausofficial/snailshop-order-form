@@ -132,18 +132,17 @@ tfoot td{padding:13px 12px;font-family:'Mitr',sans-serif;font-weight:600;
   font-size:14px;font-weight:500;padding:6px 14px;border-radius:999px;
   border:1px solid var(--line)}
 
-/* ---------- print labels (Peripage 58mm ต่อเนื่อง) ---------- */
+/* ---------- print ---------- */
 .print-area{display:none}
 @media print{
-  /* กระดาษความร้อนกว้าง 58 มม. ไม่มีขอบ ไม่ขึ้นหน้าใหม่ */
-  @page{size:58mm auto;margin:0}
-  html,body{background:#fff;margin:0;padding:0;width:58mm}
-  header,.form-card,.no-print{display:none!important}
+  body{background:#fff}
+  .no-print{display:none!important}
+  header,.form-card{display:none!important}
   .wrap{display:block;padding:0;margin:0;max-width:none}
-  .print-area{display:block;width:58mm}
+  .print-area{display:block}
   .label{
-    page-break-after:auto;          /* ต่อกันไม่เปลืองกระดาษ */
-    break-inside:avoid;             /* ไม่ตัดกลางใบ */
+    page-break-after:auto;
+    break-inside:avoid;
     border:none;border-bottom:1px dashed #000;border-radius:0;
     padding:6px 4px 8px;margin:0;color:#000;
     font-family:'Sarabun','TH Sarabun New',sans-serif;
@@ -155,6 +154,9 @@ tfoot td{padding:13px 12px;font-family:'Mitr',sans-serif;font-weight:600;
   .lbl-sec .k{font-size:10px}
   .lbl-sec .v{font-size:12px;line-height:1.35}
   .lbl-items{padding-top:4px;font-size:11px;flex-direction:column;gap:2px}
+  /* หน้าลูกค้า: ซ่อนพื้นหลัง/ปุ่ม พิมพ์เฉพาะการ์ด */
+  .ord-wrap{background:#fff;padding:0}
+  .ord-card{box-shadow:none;border:1px solid #ccc}
 }
 .label{border:1.5px dashed var(--line);border-radius:12px;padding:16px;margin-bottom:14px}
 .lbl-top{display:flex;justify-content:space-between;border-bottom:1.5px solid #000;
@@ -165,3 +167,60 @@ tfoot td{padding:13px 12px;font-family:'Mitr',sans-serif;font-weight:600;
 .lbl-sec .v{font-size:15px}
 .lbl-items{border-top:1px dashed #000;padding-top:8px;font-size:14px;
   display:flex;justify-content:space-between;gap:12px}
+
+/* ---------- status select (ในตารางแอดมิน) ---------- */
+.status-select{font-family:'Sarabun',sans-serif;font-size:13px;padding:5px 8px;
+  border:1.5px solid var(--line);border-radius:8px;background:#fff;color:var(--plum);
+  font-weight:600;cursor:pointer}
+.status-select:focus{outline:none;border-color:var(--pink);box-shadow:0 0 0 3px rgba(255,105,180,.18)}
+
+/* ============ หน้าลูกค้า (Order Status) ============ */
+.ord-wrap{min-height:100vh;background:var(--paper);padding:24px 16px 40px;
+  display:flex;flex-direction:column;align-items:center}
+.ord-top{display:flex;flex-direction:column;align-items:center;gap:2px;margin-bottom:18px}
+.ord-brand{font-family:'Mitr',sans-serif;font-size:26px;font-weight:600;color:var(--pink-deep)}
+.ord-sub{font-size:13px;color:var(--muted)}
+.ord-card{width:100%;max-width:460px;background:#fff;border:1px solid var(--line);
+  border-radius:20px;padding:26px 22px;box-shadow:0 10px 34px rgba(194,24,91,.08)}
+.ord-eyebrow{font-size:12px;letter-spacing:2px;color:var(--pink);font-weight:600;text-transform:uppercase}
+.ord-no{font-family:'Sarabun',sans-serif;font-size:18px;font-weight:400;color:var(--ink);margin:2px 0 20px}
+.ord-no b{font-family:'Mitr',sans-serif;font-weight:600;color:var(--plum);letter-spacing:.5px}
+
+/* แถบสถานะ */
+.tracker{display:flex;align-items:flex-start;margin:6px 0 4px}
+.tracker .step{flex:1;position:relative;display:flex;flex-direction:column;align-items:center;text-align:center}
+.tracker .dot{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  font-family:'Mitr',sans-serif;font-size:14px;font-weight:600;background:#F3E1EA;color:#B98BA3;
+  border:2px solid #F3E1EA;z-index:2;transition:all .2s}
+.tracker .step.done .dot{background:var(--pink);border-color:var(--pink);color:#fff}
+.tracker .step.now .dot{background:#fff;border-color:var(--pink);color:var(--pink-deep);
+  box-shadow:0 0 0 4px rgba(255,105,180,.2)}
+.tracker .step-label{font-size:12px;margin-top:7px;color:var(--muted);font-weight:600;line-height:1.3}
+.tracker .step.done .step-label,.tracker .step.now .step-label{color:var(--plum)}
+.tracker .bar{position:absolute;top:16px;left:50%;width:100%;height:3px;background:#F3E1EA;z-index:1}
+.tracker .bar.done{background:var(--pink)}
+.status-now{text-align:center;margin:16px 0 4px;font-size:14px;color:var(--ink)}
+.status-now b{color:var(--pink-deep);font-family:'Mitr',sans-serif;font-weight:600}
+
+.ord-sec{border-top:1px solid var(--line);margin-top:18px;padding-top:16px}
+.ord-sec-title{font-family:'Mitr',sans-serif;font-size:14px;color:var(--plum);font-weight:500;margin-bottom:10px}
+.ord-item{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;
+  background:var(--row);border-radius:12px;padding:12px 14px}
+.item-main{display:flex;flex-direction:column;gap:3px}
+.item-name{font-weight:600;color:var(--ink)}
+.item-note{font-size:12px;color:var(--pink-deep)}
+.item-qty{font-family:'Mitr',sans-serif;font-weight:600;color:var(--pink-deep);white-space:nowrap}
+.ord-line{font-size:14px;color:var(--ink);line-height:1.55;margin-top:4px}
+
+.ord-actions{display:flex;gap:10px;margin-top:22px}
+.ord-btn{flex:1;text-align:center;text-decoration:none;font-family:'Mitr',sans-serif;font-size:14px;
+  font-weight:500;padding:12px;border-radius:12px;cursor:pointer;border:none;transition:filter .15s}
+.ord-btn.ghost{background:#fff;color:var(--plum);border:1.5px solid var(--line)}
+.ord-btn.line{background:#06C755;color:#fff}
+.ord-btn.line:hover{filter:brightness(1.05)}
+.ord-foot{margin-top:22px;font-size:12px;color:var(--muted)}
+.ord-loading{margin-top:80px;font-size:18px;color:var(--muted)}
+.ord-notfound{text-align:center;max-width:380px}
+.ord-notfound .ord-snail{font-size:48px;margin-bottom:8px}
+.ord-notfound h2{font-family:'Mitr',sans-serif;color:var(--plum);margin-bottom:6px}
+.ord-notfound p{color:var(--muted);font-size:14px}

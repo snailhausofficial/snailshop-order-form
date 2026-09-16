@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { supabase, TABLE } from './supabase'
+import { supabase, TABLE, STATUSES, genOrderCode } from './supabase'
 
 /* ================= ตัวแยกข้อความอัตโนมัติ ================= */
 const PHONE = /(?<!\d)0[\d\-\s]{7,13}\d/g
@@ -139,6 +139,8 @@ export default function SnailOrderForm() {
   // แปลงแถวจาก DB -> รูปแบบที่แอปใช้
   const fromRow = (r) => ({
     id: r.id,
+    code: r.code || '',
+    status: r.status || STATUSES[0],
     tiktok: r.tiktok || '',
     qty: r.qty || 1,
     type: r.type || '',
@@ -150,6 +152,8 @@ export default function SnailOrderForm() {
   })
   // แปลงออเดอร์ในแอป -> แถวสำหรับ DB
   const toRow = (o) => ({
+    code: o.code || genOrderCode(),
+    status: o.status || STATUSES[0],
     tiktok: o.tiktok,
     qty: o.qty,
     type: o.type,
@@ -178,7 +182,7 @@ export default function SnailOrderForm() {
   // บันทึกออเดอร์ (1 หรือหลายตัว) — ลง DB ถ้าออนไลน์ ไม่งั้นเก็บในหน้า
   async function saveOrders(list) {
     if (!online) {
-      const withId = list.map((o) => ({ ...o, id: 'local-' + Date.now() + Math.random() }))
+      const withId = list.map((o) => ({ ...o, id: 'local-' + Date.now() + Math.random(), code: genOrderCode(), status: STATUSES[0] }))
       setOrders((prev) => [...prev, ...withId])
       return withId.length
     }
@@ -278,6 +282,28 @@ export default function SnailOrderForm() {
       }
     }
     setOrders(orders.filter((_, idx) => idx !== i))
+  }
+
+  async function updateStatus(i, status) {
+    const row = orders[i]
+    setOrders(orders.map((o, idx) => (idx === i ? { ...o, status } : o)))
+    if (online && row?.id) {
+      await supabase.from(TABLE).update({ status }).eq('id', row.id)
+    }
+  }
+
+  async function copyLink(code) {
+    if (!code) {
+      setFlash({ msg: 'ออเดอร์นี้ยังไม่มีลิงก์ (ต่อ Supabase ก่อน)', ok: false })
+      return
+    }
+    const link = `${window.location.origin}/ord/${code}`
+    try {
+      await navigator.clipboard.writeText(link)
+      setFlash({ msg: '📋 คัดลอกลิงก์ออเดอร์แล้ว — ส่งให้ลูกค้าได้เลย', ok: true })
+    } catch {
+      setFlash({ msg: link, ok: true })
+    }
   }
 
   async function clearAll() {
@@ -467,7 +493,8 @@ export default function SnailOrderForm() {
                 <thead>
                   <tr>
                     <th>ชื่อ TikTok</th><th>จำนวน</th><th>หมายเหตุ</th><th>วันส่ง</th>
-                    <th>ชื่อจริง</th><th>ที่อยู่</th><th>เบอร์</th><th className="no-print"></th>
+                    <th>ชื่อจริง</th><th>ที่อยู่</th><th>เบอร์</th>
+                    <th className="no-print">สถานะ</th><th className="no-print">ลิงก์</th><th className="no-print"></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -480,6 +507,16 @@ export default function SnailOrderForm() {
                       <td>{o.name || '—'}</td>
                       <td className="addr">{o.addr || '—'}</td>
                       <td>{o.phone || '—'}</td>
+                      <td className="no-print">
+                        <select className="status-select" value={o.status || STATUSES[0]} onChange={(e) => updateStatus(i, e.target.value)}>
+                          {STATUSES.map((s) => (
+                            <option key={s} value={s}>{s}</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="no-print">
+                        <button className="icon-btn" title={o.code ? 'คัดลอกลิงก์ ' + o.code : 'ยังไม่มีลิงก์'} onClick={() => copyLink(o.code)}>🔗</button>
+                      </td>
                       <td className="row-actions no-print">
                         <button className="icon-btn" title="ลบ" onClick={() => del(i)}>✕</button>
                       </td>
@@ -490,7 +527,7 @@ export default function SnailOrderForm() {
                   <tr>
                     <td>รวมทั้งหมด</td>
                     <td className="qty">{total}</td>
-                    <td colSpan={6}>ชุด</td>
+                    <td colSpan={8}>ชุด</td>
                   </tr>
                 </tfoot>
               </table>

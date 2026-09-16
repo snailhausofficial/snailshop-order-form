@@ -9,3 +9,14 @@ export const supabase = url && key ? createClient(url, key) : null
 
 // ชื่อตารางใน Supabase
 export const TABLE = 'admin_orders'
+
+// ขั้นสถานะออเดอร์ (เรียงตามลำดับ)
+export const STATUSES = ['สรุปแล้ว', 'ฝาก', 'แพ็ค', 'ส่งแล้ว']
+
+// สร้างเลขออเดอร์รูปแบบ YYYYMMDD-NNNN
+export function genOrderCode(d = new Date()) {
+  const p = (n) => String(n).padStart(2, '0')
+  const ymd = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`
+  const rand = String(Math.floor(1000 + Math.random() * 9000))
+  return `${ymd}-${rand}`
+}
