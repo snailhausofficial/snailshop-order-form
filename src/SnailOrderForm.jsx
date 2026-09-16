@@ -31,7 +31,7 @@ export function parseMessage(raw) {
   let m = text.match(/แอค[ก-๙a-zA-Z\s]*?ตต(?:tt)?\s*[:：]?\s*(\S.*)/)
   if (m) o.tiktok = m[1].trim()
 
-  // จำนวน + หมายเหตุ — จากบรรทัด "สถานะ / ...ชุด..."
+  // จำนวน + หมายเหตุ
   let statusLine = lines.find((l) => /ชุด/.test(l)) || lines.find((l) => /สถานะ/.test(l)) || ''
   let qm = statusLine.match(/(\d+)\s*ชุด/)
   if (qm) o.qty = qm[1]
@@ -39,7 +39,6 @@ export function parseMessage(raw) {
     let n = statusLine.replace(/สถานะ/, '').match(/(\d+)/)
     if (n) o.qty = n[1]
   }
-  // หมายเหตุ = ส่วนที่เหลือหลังตัด label + จำนวน (คั่นได้ทั้ง + และ *) ตัด "รส/รวมส่ง" ออก
   let noteRaw = statusLine.replace(/สถานะ/, '').replace(/[:：]/, '').replace(/\d+\s*ชุด/, '')
   let parts = noteRaw
     .split(/[+*]/)
@@ -47,18 +46,17 @@ export function parseMessage(raw) {
     .filter((s) => s && !/^รส\.?$/.test(s) && !/รวมส่ง/.test(s) && !/^ชุด$/.test(s))
   o.note = parts.length ? parts.join(', ') : '-'
 
-  // วันที่ส่ง (ว่างได้)
+  // วันที่ส่ง
   let dateLine = lines.find((l) => /(ส่ง.*วันที่|วันที่ส่ง|วันส่ง|ส่งของ)/.test(l)) || ''
   let dm = dateLine.match(/(\d{1,2})\s*\/\s*(\d{1,2})/)
   if (dm) o.date = dm[1] + '/' + dm[2]
 
-  // บล็อกลูกค้า = บรรทัดที่ไม่ใช่คำทักทาย/สรุป/เลขลำดับ
+  // บล็อกลูกค้า = บรรทัดที่ไม่ใช่คำทักทาย/สรุป/เลขลำดับ (เลขลำดับ = 1-3 หลัก ไม่ใช่เบอร์โทร)
   const summaryRe = /(^ขอบคุณ|แอค|สถานะ|ส่ง.*วันที่|วันที่ส่ง|^วันส่ง|ส่งของ)/
-  let block = lines.filter((l) => l && !summaryRe.test(l) && !/^\d+[.)]?$/.test(l)).join(' ')
+  let block = lines.filter((l) => l && !summaryRe.test(l) && !/^\d{1,3}[.)]?$/.test(l)).join(' ')
 
   if (block.trim()) {
     o.phone = extractPhones(block).join(' / ')
-    // ตัด label เบอร์ + ตัวเลขเบอร์ ออกก่อนแยกชื่อ/ที่อยู่
     let clean = stripPhones(block.replace(/เบอร์โทรศัพท์|เบอร์โทร\.?|โทรศัพท์|เบอร์|โทร\.?|tel\.?/gi, ' '))
     let name = '',
       addr = ''
@@ -68,43 +66,31 @@ export function parseMessage(raw) {
       let after = labelM[1]
       name = clean.slice(0, clean.indexOf(labelM[0]))
       if (!name.trim()) {
-        // ชื่อไม่ได้อยู่หน้า label (เช่น "ที่อยู่จัดส่ง" แล้วขึ้นบรรทัดใหม่เป็นชื่อ) → ดึงชื่อจากหน้าที่อยู่
         let akw = after.match(ADDR_KW)
         if (akw) {
           let i = after.indexOf(akw[0])
           name = after.slice(0, i)
           addr = after.slice(i)
-        } else {
-          addr = after
-        }
-      } else {
-        addr = after
-      }
+        } else addr = after
+      } else addr = after
     } else {
-      // ไม่มี label "ที่อยู่" — หาจุดเริ่มที่อยู่จากคำบอกตำแหน่ง
       let akw = clean.match(ADDR_KW)
       if (akw) {
         let i = clean.indexOf(akw[0])
         name = clean.slice(0, i)
         addr = clean.slice(i)
-      } else {
-        name = clean
-      }
+      } else name = clean
     }
-    o.name = name
-      .replace(/ชื่อ|ผู้รับ|[:：]/g, '')
-      .replace(/\s*\/\s*/g, ' ')
-      .replace(/\s{2,}/g, ' ')
-      .trim()
+    o.name = name.replace(/ชื่อ|ผู้รับ|[:：]/g, '').replace(/\s*\/\s*/g, ' ').replace(/\s{2,}/g, ' ').trim()
     o.addr = addr.replace(/\n+/g, ' ').replace(/\s{2,}/g, ' ').trim()
   }
 
   return o
 }
 
-// แยกข้อความหลายออเดอร์ที่ก๊อปมาต่อกัน (คั่นด้วยเลข 1. 2. หรือคำทักทายซ้ำ)
+// แยกข้อความหลายออเดอร์ที่ก๊อปมาต่อกัน
 export function splitOrders(raw) {
-  const cleaned = raw.replace(/\r/g, '').replace(/^\s*\d+[.)]\s*$/gm, '')
+  const cleaned = raw.replace(/\r/g, '').replace(/^\s*\d{1,3}[.)]\s*$/gm, '')
   const lines = cleaned.split('\n')
   const starts = []
   lines.forEach((l, i) => {
@@ -116,7 +102,7 @@ export function splitOrders(raw) {
   }
   const blocks = []
   for (let k = 0; k < starts.length; k++) {
-    const s = k === 0 ? 0 : starts[k] // ออเดอร์แรกรวมข้อความที่อยู่เหนือบรรทัดแอคด้วย
+    const s = k === 0 ? 0 : starts[k]
     const e = k + 1 < starts.length ? starts[k + 1] : lines.length
     blocks.push(lines.slice(s, e).join('\n'))
   }
@@ -133,14 +119,17 @@ export default function SnailOrderForm() {
   const [flash, setFlash] = useState({ msg: '', ok: true })
   const [busy, setBusy] = useState(false)
   const [copyText, setCopyText] = useState('')
+  const [filterDate, setFilterDate] = useState('') // '' = ทั้งหมด
+  const [trackText, setTrackText] = useState('')
+  const [showTrack, setShowTrack] = useState(false)
 
-  const online = !!supabase // ต่อ Supabase อยู่ไหม
+  const online = !!supabase
 
-  // แปลงแถวจาก DB -> รูปแบบที่แอปใช้
   const fromRow = (r) => ({
     id: r.id,
     code: r.code || '',
     status: r.status || STATUSES[0],
+    tracking: r.tracking || '',
     tiktok: r.tiktok || '',
     qty: r.qty || 1,
     type: r.type || '',
@@ -150,10 +139,10 @@ export default function SnailOrderForm() {
     addr: r.addr || '',
     note: r.note || '-',
   })
-  // แปลงออเดอร์ในแอป -> แถวสำหรับ DB
   const toRow = (o) => ({
     code: o.code || genOrderCode(),
     status: o.status || STATUSES[0],
+    tracking: o.tracking || '',
     tiktok: o.tiktok,
     qty: o.qty,
     type: o.type,
@@ -164,7 +153,6 @@ export default function SnailOrderForm() {
     note: o.note,
   })
 
-  // โหลดออเดอร์ที่บันทึกไว้ตอนเปิดเว็บ
   useEffect(() => {
     if (!online) return
     ;(async () => {
@@ -173,16 +161,19 @@ export default function SnailOrderForm() {
         setFlash({ msg: 'โหลดข้อมูลจากฐานข้อมูลไม่ได้: ' + error.message, ok: false })
         return
       }
-      setOrders((data || []).map(fromRow))
+      const rows = (data || []).map(fromRow)
+      setOrders(rows)
+      // ค่าเริ่มต้น: เลือกรอบส่งล่าสุด (จะได้ไม่ปนวันอื่น)
+      const latest = rows.length ? rows[rows.length - 1].date : ''
+      if (latest) setFilterDate(latest)
     })()
   }, [online])
 
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value })
 
-  // บันทึกออเดอร์ (1 หรือหลายตัว) — ลง DB ถ้าออนไลน์ ไม่งั้นเก็บในหน้า
   async function saveOrders(list) {
     if (!online) {
-      const withId = list.map((o) => ({ ...o, id: 'local-' + Date.now() + Math.random(), code: genOrderCode(), status: STATUSES[0] }))
+      const withId = list.map((o) => ({ ...o, id: 'local-' + Date.now() + Math.random(), code: genOrderCode(), status: STATUSES[0], tracking: '' }))
       setOrders((prev) => [...prev, ...withId])
       return withId.length
     }
@@ -240,6 +231,8 @@ export default function SnailOrderForm() {
     }
     const n = await saveOrders(parsed)
     if (n > 0) {
+      const d = parsed.find((o) => o.date)?.date
+      if (d) setFilterDate(d)
       setForm({ ...BLANK })
       setPaste('')
       setFlash({ msg: `✅ เพิ่ม ${n} ออเดอร์แล้ว${online ? ' (บันทึกลงฐานข้อมูล)' : ''}`, ok: true })
@@ -265,30 +258,28 @@ export default function SnailOrderForm() {
     }
     const n = await saveOrders([o])
     if (n > 0) {
-      // เก็บวันส่งไว้ให้กรอกต่อเร็วขึ้น (มักส่งวันเดียวกันหลายคน)
+      if (o.date) setFilterDate(o.date)
       setForm({ ...BLANK, date: form.date, qty: 1 })
       setPaste('')
       setFlash({ msg: '', ok: true })
     }
   }
 
-  async function del(i) {
-    const row = orders[i]
-    if (online && row?.id) {
-      const { error } = await supabase.from(TABLE).delete().eq('id', row.id)
+  async function del(o) {
+    if (online && o?.id) {
+      const { error } = await supabase.from(TABLE).delete().eq('id', o.id)
       if (error) {
         setFlash({ msg: 'ลบไม่สำเร็จ: ' + error.message, ok: false })
         return
       }
     }
-    setOrders(orders.filter((_, idx) => idx !== i))
+    setOrders((prev) => prev.filter((x) => x !== o))
   }
 
-  async function updateStatus(i, status) {
-    const row = orders[i]
-    setOrders(orders.map((o, idx) => (idx === i ? { ...o, status } : o)))
-    if (online && row?.id) {
-      await supabase.from(TABLE).update({ status }).eq('id', row.id)
+  async function updateStatus(o, status) {
+    setOrders((prev) => prev.map((x) => (x === o ? { ...x, status } : x)))
+    if (online && o?.id) {
+      await supabase.from(TABLE).update({ status }).eq('id', o.id)
     }
   }
 
@@ -318,29 +309,74 @@ export default function SnailOrderForm() {
     setOrders([])
   }
 
+  // จับคู่เลขพัสดุ Flash เข้ากับออเดอร์ (จับด้วยเบอร์โทร)
+  async function importTracking() {
+    if (!trackText.trim()) {
+      setFlash({ msg: 'วางข้อมูลจากไฟล์ Flash ก่อนนะคะ', ok: false })
+      return
+    }
+    const lines = trackText.split('\n').map((l) => l.trim()).filter(Boolean)
+    const next = orders.map((o) => ({ ...o }))
+    const changed = []
+    let matched = 0
+    const missed = []
+    lines.forEach((line) => {
+      const tk = (line.match(/TH[0-9A-Z]{8,}/i) || [])[0]
+      const ph = (line.match(/(?<!\d)0\d{8,9}(?!\d)/) || [])[0]
+      if (!tk) return
+      let idx = -1
+      if (ph) idx = next.findIndex((o) => (o.phone || '').replace(/\D/g, '').includes(ph))
+      if (idx < 0) {
+        missed.push(tk)
+        return
+      }
+      next[idx].tracking = tk
+      next[idx].status = 'ส่งแล้ว'
+      changed.push(next[idx])
+      matched++
+    })
+    setOrders(next)
+    if (online) {
+      for (const o of changed) {
+        await supabase.from(TABLE).update({ tracking: o.tracking, status: o.status }).eq('id', o.id)
+      }
+    }
+    setFlash({
+      msg: `📦 จับคู่เลขพัสดุได้ ${matched} รายการ${missed.length ? ` · หาเจ้าของไม่เจอ ${missed.length}` : ''}`,
+      ok: matched > 0,
+    })
+    if (matched > 0) setTrackText('')
+  }
+
   const loadDemo = () =>
     setOrders([
-      { id: 'demo1', tiktok: '@ปาล์มที่ชอบไปเที่ยว', qty: 4, type: '', date: '15/09', name: 'วริศรา บุญนิยม', phone: '0617215185', addr: 'เลขที่ 30/13 ซอยสำเร็จพัฒนา13 ตำบลปลายบาง อำเภอบางกรวย จังหวัดนนทบุรี 1113', note: '401' },
-      { id: 'demo2', tiktok: 'baifern_beauty', qty: 1, type: 'เหลี่ยมยาว', date: '15/09', name: 'ใบเฟิร์น สวยงาม', phone: '089-999-1111 / 086-222-3333', addr: '12 ม.5 ต.บางพูด อ.ปากเกร็ด จ.นนทบุรี 11120', note: 'กล่อง' },
+      { id: 'demo1', tiktok: '@ปาล์มที่ชอบไปเที่ยว', qty: 4, type: '', date: '15/09', name: 'วริศรา บุญนิยม', phone: '0617215185', addr: 'เลขที่ 30/13 ซอยสำเร็จพัฒนา13 ตำบลปลายบาง อำเภอบางกรวย จังหวัดนนทบุรี 1113', note: '401', status: STATUSES[0], code: '', tracking: '' },
+      { id: 'demo2', tiktok: 'baifern_beauty', qty: 1, type: 'เหลี่ยมยาว', date: '15/09', name: 'ใบเฟิร์น สวยงาม', phone: '089-999-1111 / 086-222-3333', addr: '12 ม.5 ต.บางพูด อ.ปากเกร็ด จ.นนทบุรี 11120', note: 'กล่อง', status: STATUSES[0], code: '', tracking: '' },
     ])
 
   function printLabels() {
-    if (orders.length === 0) {
+    if (visible.length === 0) {
       alert('ยังไม่มีออเดอร์ให้ปริ้นค่ะ 🐌')
       return
     }
     window.print()
   }
 
-  // สร้างข้อความสำหรับก๊อปไปวางในแอปปริ้น (Peripage)
+  // ===== ตัวกรองรอบส่ง =====
+  const dates = [...new Set(orders.map((o) => o.date).filter(Boolean))].sort()
+  const visible = filterDate ? orders.filter((o) => (o.date || '') === filterDate) : orders
+  const total = visible.reduce((s, o) => s + o.qty, 0)
+  const roundLabel = filterDate || 'ทั้งหมด'
+
+  // สร้างข้อความสำหรับก๊อปไปวางในแอปปริ้น (เฉพาะรอบที่เลือก)
   function buildText(withAddr) {
-    const date = orders.find((o) => o.date)?.date || ''
-    const total = orders.reduce((s, o) => s + o.qty, 0)
+    const date = filterDate || visible.find((o) => o.date)?.date || ''
+    const sum = visible.reduce((s, o) => s + o.qty, 0)
     let out = `วันที่ส่ง ${date}\n========================\n\n`
-    orders.forEach((o, i) => {
+    visible.forEach((o, i) => {
       const noteStr = o.note && o.note !== '-' ? ` + ${o.note}` : ''
       const who = o.tiktok || o.name || '-'
-      out += `${i + 1}. ${who} | ${o.qty} ชุด${noteStr}\n`
+      out += `${i + 1}. แอคเค้าตต : ${who} | ${o.qty} ชุด${noteStr}\n`
       if (withAddr) {
         const line = [o.name, o.addr, o.phone].filter(Boolean).join(' ')
         if (line) out += `${line}\n`
@@ -348,12 +384,12 @@ export default function SnailOrderForm() {
       out += `\n`
     })
     out += `========================\n📦 สรุป วันที่ ${date}\n`
-    out += `ออเดอร์: ${orders.length} ราย\nจำนวนชุดรวม: ${total} ชุด\n\nหมายเหตุ: -`
+    out += `ออเดอร์: ${visible.length} ราย\nจำนวนชุดรวม: ${sum} ชุด\n\nหมายเหตุ: -`
     return out
   }
 
   async function copyForPrint(withAddr) {
-    if (orders.length === 0) {
+    if (visible.length === 0) {
       setFlash({ msg: 'ยังไม่มีออเดอร์ให้คัดลอกค่ะ 🐌', ok: false })
       return
     }
@@ -366,8 +402,6 @@ export default function SnailOrderForm() {
       setFlash({ msg: 'คัดลอกอัตโนมัติไม่ได้ — กดค้างในช่องข้างล่างแล้วก๊อปเองได้', ok: false })
     }
   }
-
-  const total = orders.reduce((s, o) => s + o.qty, 0)
 
   return (
     <>
@@ -417,7 +451,7 @@ export default function SnailOrderForm() {
             </div>
             <div className="field">
               <label>วันส่ง</label>
-              <input value={form.date} onChange={set('date')} placeholder="15/09" />
+              <input value={form.date} onChange={set('date')} placeholder="16/09" />
             </div>
           </div>
 
@@ -462,15 +496,38 @@ export default function SnailOrderForm() {
         {/* ===== TABLE ===== */}
         <section className="card">
           <div className="list-head">
-            <h2 style={{ margin: 0 }}>📋 ออเดอร์วันนี้ <span className="pill">{orders.length} ออเดอร์</span></h2>
+            <h2 style={{ margin: 0 }}>
+              📋 รอบส่ง {roundLabel} <span className="pill">{visible.length} ออเดอร์ · {total} ชุด</span>
+            </h2>
             <div className="toolbar no-print">
+              <select className="round-select" value={filterDate} onChange={(e) => setFilterDate(e.target.value)}>
+                <option value="">ทุกวัน</option>
+                {dates.map((d) => (
+                  <option key={d} value={d}>รอบส่ง {d}</option>
+                ))}
+              </select>
               <button className="btn btn-ghost btn-sm" onClick={() => copyForPrint(true)}>📋 คัดลอก (มีที่อยู่)</button>
               <button className="btn btn-ghost btn-sm" onClick={() => copyForPrint(false)}>📋 คัดลอก (สรุป)</button>
+              <button className="btn btn-ghost btn-sm" onClick={() => setShowTrack((v) => !v)}>📦 ใส่เลขพัสดุ</button>
               <button className="btn btn-ghost btn-sm" onClick={printLabels}>🖨️ ปริ้นใบปะหน้า</button>
-              <button className="btn btn-ghost btn-sm" onClick={loadDemo}>✨ ใส่ตัวอย่าง</button>
               <button className="btn btn-ghost btn-sm" onClick={clearAll}>🗑️ ล้างทั้งหมด</button>
             </div>
           </div>
+
+          {showTrack && (
+            <div className="copy-box no-print">
+              <div className="copy-head">
+                <span>วางข้อมูลจากไฟล์ Flash (ก๊อปคอลัมน์ เลขพัสดุ + เบอร์ มาวางได้เลย)</span>
+                <button className="mini-x" onClick={() => setShowTrack(false)}>✕ ปิด</button>
+              </div>
+              <textarea
+                value={trackText}
+                onChange={(e) => setTrackText(e.target.value)}
+                placeholder={'ตัวอย่าง (ก๊อปจาก Excel ทั้งแถวได้):\nTH010395VG1X0C\tคุณวิลาวัลย์\t0853288992\nTH013195VFTF9A0\tคุณอภิญญา\t0930069077'}
+              />
+              <button className="btn btn-primary" style={{ marginTop: 10 }} onClick={importTracking}>🔗 จับคู่เลขพัสดุ (ด้วยเบอร์โทร)</button>
+            </div>
+          )}
 
           {copyText && (
             <div className="copy-box no-print">
@@ -482,10 +539,10 @@ export default function SnailOrderForm() {
             </div>
           )}
 
-          {orders.length === 0 ? (
+          {visible.length === 0 ? (
             <div className="empty">
               <div className="big">🐌</div>
-              ยังไม่มีออเดอร์ — กรอกฟอร์มด้านซ้ายเพื่อเริ่ม
+              ยังไม่มีออเดอร์ในรอบนี้ — กรอกฟอร์มด้านซ้าย หรือเลือกรอบส่งอื่น
             </div>
           ) : (
             <div className="table-scroll">
@@ -498,9 +555,12 @@ export default function SnailOrderForm() {
                   </tr>
                 </thead>
                 <tbody>
-                  {orders.map((o, i) => (
+                  {visible.map((o, i) => (
                     <tr key={o.id ?? i}>
-                      <td className="acc">{o.tiktok || '—'}</td>
+                      <td className="acc">
+                        {o.tiktok || '—'}
+                        {o.tracking && <div className="track-tag">📦 {o.tracking}</div>}
+                      </td>
                       <td className="qty">{o.qty}</td>
                       <td>{o.note && o.note !== '-' ? <span className="note-tag">{o.note}</span> : '-'}</td>
                       <td>{o.date || '—'}</td>
@@ -508,7 +568,7 @@ export default function SnailOrderForm() {
                       <td className="addr">{o.addr || '—'}</td>
                       <td>{o.phone || '—'}</td>
                       <td className="no-print">
-                        <select className="status-select" value={o.status || STATUSES[0]} onChange={(e) => updateStatus(i, e.target.value)}>
+                        <select className="status-select" value={o.status || STATUSES[0]} onChange={(e) => updateStatus(o, e.target.value)}>
                           {STATUSES.map((s) => (
                             <option key={s} value={s}>{s}</option>
                           ))}
@@ -518,14 +578,14 @@ export default function SnailOrderForm() {
                         <button className="icon-btn" title={o.code ? 'คัดลอกลิงก์ ' + o.code : 'ยังไม่มีลิงก์'} onClick={() => copyLink(o.code)}>🔗</button>
                       </td>
                       <td className="row-actions no-print">
-                        <button className="icon-btn" title="ลบ" onClick={() => del(i)}>✕</button>
+                        <button className="icon-btn" title="ลบ" onClick={() => del(o)}>✕</button>
                       </td>
                     </tr>
                   ))}
                 </tbody>
                 <tfoot>
                   <tr>
-                    <td>รวมทั้งหมด</td>
+                    <td>รวมรอบนี้</td>
                     <td className="qty">{total}</td>
                     <td colSpan={8}>ชุด</td>
                   </tr>
@@ -536,27 +596,18 @@ export default function SnailOrderForm() {
         </section>
       </div>
 
-      {/* ===== PRINT LABELS ===== */}
+      {/* ===== PRINT LABELS (Peripage 57x30mm, เฉพาะรอบที่เลือก) ===== */}
       <div className="print-area">
-        {orders.map((o, i) => (
+        {visible.map((o, i) => (
           <div className="label" key={o.id ?? i}>
             <div className="lbl-top">
               <span className="lbl-brand">🐌 SnailShop</span>
-              <span>ส่ง: {o.date || '-'}</span>
+              <span>{o.date || '-'}</span>
             </div>
-            <div className="lbl-sec">
-              <div className="k">ผู้ส่ง</div>
-              <div className="v">SnailShop (เล็บปลอม Handmade)</div>
-            </div>
-            <div className="lbl-sec">
-              <div className="k">ผู้รับ</div>
-              <div className="v"><b>{o.name || '-'}</b> &nbsp; โทร {o.phone || '-'}</div>
-              <div className="v">{o.addr || '-'}</div>
-            </div>
-            <div className="lbl-items">
-              <span>รายการ: {o.type || 'เล็บปลอม'} × {o.qty} ชุด</span>
-              <span>{o.note && o.note !== '-' ? 'แถม: ' + o.note : ''}</span>
-            </div>
+            <div className="lbl-acc">แอคเค้าตต: {o.tiktok || '-'}</div>
+            <div className="lbl-row"><b>{o.name || '-'}</b> · {o.phone || '-'}</div>
+            <div className="lbl-row">จำนวน {o.qty} ชุด{o.note && o.note !== '-' ? ` · ${o.note}` : ''}</div>
+            {o.tracking && <div className="lbl-row">พัสดุ: {o.tracking}</div>}
           </div>
         ))}
       </div>

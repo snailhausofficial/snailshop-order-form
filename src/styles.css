@@ -135,30 +135,32 @@ tfoot td{padding:13px 12px;font-family:'Mitr',sans-serif;font-weight:600;
 /* ---------- print ---------- */
 .print-area{display:none}
 @media print{
+  /* Peripage สติกเกอร์ 57 x 30 มม. ต่อเนื่อง */
+  @page{size:57mm 30mm;margin:0}
   body{background:#fff}
   .no-print{display:none!important}
   header,.form-card{display:none!important}
   .wrap{display:block;padding:0;margin:0;max-width:none}
-  .print-area{display:block}
+  .print-area{display:block;width:57mm}
   .label{
-    page-break-after:auto;
-    break-inside:avoid;
-    border:none;border-bottom:1px dashed #000;border-radius:0;
-    padding:6px 4px 8px;margin:0;color:#000;
-    font-family:'Sarabun','TH Sarabun New',sans-serif;
+    width:57mm;box-sizing:border-box;
+    page-break-after:always;break-inside:avoid;
+    border:none;border-radius:0;margin:0;padding:2mm 2.5mm;color:#000;
+    font-family:'Sarabun','TH Sarabun New',sans-serif;line-height:1.25;
   }
-  .label:last-child{border-bottom:none}
-  .lbl-top{border-bottom:1px solid #000;padding-bottom:4px;margin-bottom:5px}
-  .lbl-brand{font-size:13px}
-  .lbl-sec{margin-bottom:5px}
-  .lbl-sec .k{font-size:10px}
-  .lbl-sec .v{font-size:12px;line-height:1.35}
-  .lbl-items{padding-top:4px;font-size:11px;flex-direction:column;gap:2px}
-  /* หน้าลูกค้า: ซ่อนพื้นหลัง/ปุ่ม พิมพ์เฉพาะการ์ด */
+  .label:last-child{page-break-after:auto}
+  .lbl-top{display:flex;justify-content:space-between;border-bottom:1px solid #000;
+    padding-bottom:1mm;margin-bottom:1mm;font-size:10px}
+  .lbl-brand{font-family:'Mitr',sans-serif;font-weight:600;font-size:11px}
+  .lbl-acc{font-size:11px;font-weight:700;margin-bottom:.5mm}
+  .lbl-row{font-size:10px;margin-bottom:.4mm}
+  /* หน้าลูกค้า: พิมพ์เป็น A4 ปกติ */
   .ord-wrap{background:#fff;padding:0}
   .ord-card{box-shadow:none;border:1px solid #ccc}
 }
-.label{border:1.5px dashed var(--line);border-radius:12px;padding:16px;margin-bottom:14px}
+.label{border:1.5px dashed var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
+.lbl-acc{font-weight:700;color:var(--plum);margin:2px 0}
+.lbl-row{font-size:14px;color:var(--ink);margin-bottom:2px}
 .lbl-top{display:flex;justify-content:space-between;border-bottom:1.5px solid #000;
   padding-bottom:8px;margin-bottom:10px}
 .lbl-brand{font-family:'Mitr',sans-serif;font-weight:600;font-size:16px}
@@ -224,3 +226,11 @@ tfoot td{padding:13px 12px;font-family:'Mitr',sans-serif;font-weight:600;
 .ord-notfound .ord-snail{font-size:48px;margin-bottom:8px}
 .ord-notfound h2{font-family:'Mitr',sans-serif;color:var(--plum);margin-bottom:6px}
 .ord-notfound p{color:var(--muted);font-size:14px}
+
+/* ---------- รอบส่ง (date filter) + tracking ---------- */
+.round-select{font-family:'Mitr',sans-serif;font-size:13px;padding:7px 12px;border-radius:9px;
+  border:1.5px solid var(--pink);background:#fff;color:var(--pink-deep);font-weight:500;cursor:pointer}
+.round-select:focus{outline:none;box-shadow:0 0 0 3px rgba(255,105,180,.18)}
+.track-tag{font-size:11px;color:#0a7a3f;font-weight:600;margin-top:3px;white-space:nowrap}
+.ord-acc{font-size:14px;color:var(--ink);margin:-8px 0 16px}
+.ord-acc b{color:var(--pink-deep);font-weight:700}

@@ -54,6 +54,7 @@ export default function OrderStatus() {
         <h1 className="ord-no">
           เลขที่ <b>{order.code}</b>
         </h1>
+        {order.tiktok && <div className="ord-acc">แอคเค้าตต : <b>{order.tiktok}</b></div>}
 
         {/* แถบสถานะ */}
         <div className="tracker">
@@ -82,6 +83,9 @@ export default function OrderStatus() {
             <div className="item-qty">{order.qty} ชุด</div>
           </div>
           {order.send_date && <div className="ord-line">📅 กำหนดส่ง: <b>{order.send_date}</b></div>}
+          {order.tracking && (
+            <div className="ord-line">📦 เลขพัสดุ Flash: <b>{order.tracking}</b></div>
+          )}
         </div>
 
         {/* ที่อยู่ */}
