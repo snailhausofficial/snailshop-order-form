@@ -135,8 +135,8 @@ tfoot td{padding:13px 12px;font-family:'Mitr',sans-serif;font-weight:600;
 /* ---------- print ---------- */
 .print-area{display:none}
 @media print{
-  /* Peripage สติกเกอร์ 57 x 30 มม. ต่อเนื่อง */
-  @page{size:57mm 30mm;margin:0}
+  /* Peripage กว้าง 57 มม. ยาวต่อเนื่อง — ใบปะหน้าติดกันไม่เว้นหน้า ไม่เปลืองกระดาษ */
+  @page{size:57mm auto;margin:0}
   body{background:#fff}
   .no-print{display:none!important}
   header,.form-card{display:none!important}
@@ -144,11 +144,12 @@ tfoot td{padding:13px 12px;font-family:'Mitr',sans-serif;font-weight:600;
   .print-area{display:block;width:57mm}
   .label{
     width:57mm;box-sizing:border-box;
-    page-break-after:always;break-inside:avoid;
-    border:none;border-radius:0;margin:0;padding:2mm 2.5mm;color:#000;
-    font-family:'Sarabun','TH Sarabun New',sans-serif;line-height:1.25;
+    page-break-after:auto;break-inside:avoid;   /* ต่อกัน + ไม่ตัดกลางใบ */
+    border:none;border-bottom:1px dashed #000;border-radius:0;   /* เส้นประไว้ตัด */
+    margin:0;padding:2mm 2.5mm;color:#000;
+    font-family:'Sarabun','TH Sarabun New',sans-serif;line-height:1.2;
   }
-  .label:last-child{page-break-after:auto}
+  .label:last-child{border-bottom:none}
   .lbl-top{display:flex;justify-content:space-between;border-bottom:1px solid #000;
     padding-bottom:1mm;margin-bottom:1mm;font-size:10px}
   .lbl-brand{font-family:'Mitr',sans-serif;font-weight:600;font-size:11px}
