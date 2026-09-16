@@ -336,16 +336,19 @@ export default function SnailOrderForm() {
     } catch {}
   }
 
-  async function clearAll() {
-    if (!confirm('ล้างออเดอร์ทั้งหมด? (ลบถาวรจากฐานข้อมูลด้วย)')) return
+  async function clearRound() {
+    const label = filterDate || 'ทุกวัน'
+    const ids = (filterDate ? orders.filter((o) => (o.date || '') === filterDate) : orders).map((o) => o.id)
+    if (ids.length === 0) return
+    if (!confirm(`ล้างออเดอร์รอบส่ง ${label}? (ลบถาวร ${ids.length} รายการ)`)) return
     if (online) {
-      const { error } = await supabase.from(TABLE).delete().neq('id', '00000000-0000-0000-0000-000000000000')
+      const { error } = await supabase.from(TABLE).delete().in('id', ids)
       if (error) {
         setFlash({ msg: 'ล้างไม่สำเร็จ: ' + error.message, ok: false })
         return
       }
     }
-    setOrders([])
+    setOrders((prev) => prev.filter((o) => !ids.includes(o.id)))
   }
 
   // จับคู่เลขพัสดุ Flash เข้ากับออเดอร์ (จับด้วยเบอร์ก่อน ไม่เจอค่อยจับด้วยชื่อจริง)
@@ -571,7 +574,7 @@ export default function SnailOrderForm() {
         </section>
 
         {/* ===== TABLE ===== */}
-        <section className="card">
+        <section className="card no-print">
           <div className="list-head">
             <h2 style={{ margin: 0 }}>
               📋 รอบส่ง {roundLabel} <span className="pill">{visible.length} ออเดอร์ · {total} ชุด</span>
@@ -587,7 +590,7 @@ export default function SnailOrderForm() {
               <button className="btn btn-ghost btn-sm" onClick={() => copyForPrint(false)}>📋 คัดลอก (สรุป)</button>
               <button className="btn btn-ghost btn-sm" onClick={() => setShowTrack((v) => !v)}>📦 ใส่เลขพัสดุ</button>
               <button className="btn btn-ghost btn-sm" onClick={printLabels}>🖨️ ปริ้นใบปะหน้า</button>
-              <button className="btn btn-ghost btn-sm" onClick={clearAll}>🗑️ ล้างทั้งหมด</button>
+              <button className="btn btn-ghost btn-sm" onClick={clearRound}>🗑️ ล้างรอบนี้</button>
             </div>
           </div>
 
