@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { supabase, TABLE, STATUSES, genOrderCode } from './supabase'
 
 /* ================= ตัวแยกข้อความอัตโนมัติ ================= */
-const PHONE = /(?<!\d)0[\d\-\s]{7,13}\d/g
+const PHONE = /(?<!\d)0(?:[\s.\-]?\d){8,9}/g
 
 function extractPhones(s) {
   const out = []
@@ -31,28 +31,28 @@ export function parseMessage(raw) {
   let m = text.match(/แอค[ก-๙a-zA-Z\s]*?ตต(?:tt)?\s*[:：]?\s*(\S.*)/)
   if (m) o.tiktok = m[1].trim()
 
-  // จำนวน + หมายเหตุ
-  let statusLine = lines.find((l) => /ชุด/.test(l)) || lines.find((l) => /สถานะ/.test(l)) || ''
-  let qm = statusLine.match(/(\d+)\s*ชุด/)
+  // จำนวน + หมายเหตุ (รองรับหัวข้อ สถานะ/จำนวน, มีหรือไม่มีคำว่า "ชุด")
+  let statusLine = lines.find((l) => /ชุด/.test(l)) || lines.find((l) => /สถานะ|จำนวน/.test(l)) || ''
+  let qm = statusLine.match(/(\d+)\s*ชุด/) || statusLine.match(/(\d+)/)
   if (qm) o.qty = qm[1]
-  else {
-    let n = statusLine.replace(/สถานะ/, '').match(/(\d+)/)
-    if (n) o.qty = n[1]
-  }
-  let noteRaw = statusLine.replace(/สถานะ/, '').replace(/[:：]/, '').replace(/\d+\s*ชุด/, '')
+  let noteRaw = statusLine.replace(/สถานะ|จำนวน/g, '').replace(/[:：]/, '')
+  if (qm) noteRaw = noteRaw.replace(qm[0], ' ')
   let parts = noteRaw
     .split(/[+*]/)
     .map((s) => s.trim())
-    .filter((s) => s && !/^รส\.?$/.test(s) && !/รวมส่ง/.test(s) && !/^ชุด$/.test(s))
+    .filter((s) => s && !/^รส\.?$/.test(s) && !/รวมส่ง/.test(s) && !/^ชุด$/.test(s) && !/^\d+$/.test(s))
   o.note = parts.length ? parts.join(', ') : '-'
 
-  // วันที่ส่ง
-  let dateLine = lines.find((l) => /(ส่ง.*วันที่|วันที่ส่ง|วันส่ง|ส่งของ)/.test(l)) || ''
+  // วันที่ส่ง (รองรับ ส่งของวันที่/ส่งวันที่/จัดส่ง/นัดส่ง — ต้องมี DD/MM ในบรรทัดเดียวกัน)
+  let dateLine =
+    lines.find(
+      (l) => /(ส่ง.*วันที่|วันที่ส่ง|วันส่ง|ส่งของ|จัดส่ง|นัดส่ง|รอบส่ง)/.test(l) && /\d{1,2}\s*\/\s*\d{1,2}/.test(l)
+    ) || ''
   let dm = dateLine.match(/(\d{1,2})\s*\/\s*(\d{1,2})/)
   if (dm) o.date = dm[1] + '/' + dm[2]
 
   // บล็อกลูกค้า = บรรทัดที่ไม่ใช่คำทักทาย/สรุป/เลขลำดับ (เลขลำดับ = 1-3 หลัก ไม่ใช่เบอร์โทร)
-  const summaryRe = /(^ขอบคุณ|แอค|สถานะ|ส่ง.*วันที่|วันที่ส่ง|^วันส่ง|ส่งของ)/
+  const summaryRe = /(^ขอบคุณ|แอค|สถานะ|จำนวน|ส่ง.*วันที่|วันที่ส่ง|^วันส่ง|ส่งของ|จัดส่ง)/
   let block = lines.filter((l) => l && !summaryRe.test(l) && !/^\d{1,3}[.)]?$/.test(l)).join(' ')
 
   if (block.trim()) {
@@ -309,27 +309,42 @@ export default function SnailOrderForm() {
     setOrders([])
   }
 
-  // จับคู่เลขพัสดุ Flash เข้ากับออเดอร์ (จับด้วยเบอร์โทร)
+  // จับคู่เลขพัสดุ Flash เข้ากับออเดอร์ (จับด้วยเบอร์ก่อน ไม่เจอค่อยจับด้วยชื่อจริง)
   async function importTracking() {
     if (!trackText.trim()) {
       setFlash({ msg: 'วางข้อมูลจากไฟล์ Flash ก่อนนะคะ', ok: false })
       return
     }
+    const norm = (s) => (s || '').replace(/คุณ/g, '').replace(/\([^)]*\)/g, '').replace(/\s+/g, '').trim()
     const lines = trackText.split('\n').map((l) => l.trim()).filter(Boolean)
     const next = orders.map((o) => ({ ...o }))
+    const used = new Set()
     const changed = []
     let matched = 0
     const missed = []
     lines.forEach((line) => {
       const tk = (line.match(/TH[0-9A-Z]{8,}/i) || [])[0]
-      const ph = (line.match(/(?<!\d)0\d{8,9}(?!\d)/) || [])[0]
       if (!tk) return
+      const phRaw = (line.match(/(?<!\d)0(?:[\s.\-]?\d){8,9}/) || [])[0]
+      const ph = phRaw ? phRaw.replace(/\D/g, '') : ''
+      let fname = line.replace(tk, '')
+      if (phRaw) fname = fname.replace(phRaw, '')
+      const nname = norm(fname.replace(/\t/g, ' '))
       let idx = -1
-      if (ph) idx = next.findIndex((o) => (o.phone || '').replace(/\D/g, '').includes(ph))
+      // 1) จับด้วยเบอร์
+      if (ph) idx = next.findIndex((o, i) => !used.has(i) && (o.phone || '').replace(/\D/g, '').includes(ph))
+      // 2) ไม่เจอ → จับด้วยชื่อจริง
+      if (idx < 0 && nname)
+        idx = next.findIndex((o, i) => {
+          if (used.has(i)) return false
+          const on = norm(o.name)
+          return on && (on === nname || on.includes(nname) || nname.includes(on))
+        })
       if (idx < 0) {
         missed.push(tk)
         return
       }
+      used.add(idx)
       next[idx].tracking = tk
       next[idx].status = 'ส่งแล้ว'
       changed.push(next[idx])
