@@ -131,6 +131,7 @@ export default function SnailOrderForm() {
   })
   const [pw, setPw] = useState('')
   const [lockErr, setLockErr] = useState(false)
+  const [linkModal, setLinkModal] = useState(null)
 
   const ADMIN_CODE = import.meta.env.VITE_ADMIN_CODE || 'snailshop'
   function tryUnlock() {
@@ -329,12 +330,10 @@ export default function SnailOrderForm() {
       setOrders((prev) => prev.map((x) => (x === o ? { ...x, code } : x)))
     }
     const link = `${window.location.origin}/ord/${code}`
+    setLinkModal({ link, name: o.name || o.tiktok || '' })
     try {
       await navigator.clipboard.writeText(link)
-      setFlash({ msg: '📋 คัดลอกลิงก์ออเดอร์แล้ว — ส่งให้ลูกค้าได้เลย', ok: true })
-    } catch {
-      setFlash({ msg: link, ok: true })
-    }
+    } catch {}
   }
 
   async function clearAll() {
@@ -689,6 +688,45 @@ export default function SnailOrderForm() {
           </div>
         ))}
       </div>
+      {/* ===== POPUP ลิงก์ออเดอร์ ===== */}
+      {linkModal && (
+        <div
+          onClick={() => setLinkModal(null)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(60,20,40,.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50, padding: 16 }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{ background: '#fff', borderRadius: 18, padding: 24, width: '100%', maxWidth: 400, boxShadow: '0 20px 50px rgba(0,0,0,.25)', fontFamily: "'Sarabun',sans-serif" }}
+          >
+            <div style={{ fontFamily: "'Mitr',sans-serif", fontSize: 18, color: 'var(--pink-deep)', marginBottom: 4 }}>🔗 ลิงก์ออเดอร์</div>
+            {linkModal.name && <div style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 14 }}>{linkModal.name}</div>}
+            <input
+              readOnly
+              value={linkModal.link}
+              onFocus={(e) => e.target.select()}
+              style={{ width: '100%', fontSize: 13, padding: '11px 12px', border: '1.5px solid var(--line)', borderRadius: 10, background: 'var(--paper)', color: 'var(--ink)', marginBottom: 14, boxSizing: 'border-box' }}
+            />
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                className="btn btn-primary"
+                style={{ flex: 1 }}
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(linkModal.link)
+                    setFlash({ msg: '📋 คัดลอกแล้ว', ok: true })
+                  } catch {}
+                }}
+              >
+                📋 คัดลอก
+              </button>
+              <a className="btn btn-ghost" style={{ flex: 1, textDecoration: 'none' }} href={linkModal.link} target="_blank" rel="noreferrer">
+                ↗ เปิดดู
+              </a>
+            </div>
+            <p className="mini-clear" style={{ marginTop: 12 }} onClick={() => setLinkModal(null)}>ปิด</p>
+          </div>
+        </div>
+      )}
     </>
   )
 }
