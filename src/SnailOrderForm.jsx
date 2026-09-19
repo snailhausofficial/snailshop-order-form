@@ -351,11 +351,16 @@ export default function SnailOrderForm() {
     setOrders((prev) => prev.filter((o) => !ids.includes(o.id)))
   }
 
-  // จับคู่เลขพัสดุ Flash เข้ากับออเดอร์ (จับด้วยเบอร์ก่อน ไม่เจอค่อยจับด้วยชื่อจริง)
+  // จับคู่เลขพัสดุ Flash (ตัดเลขพัสดุออกก่อน → เทียบเบอร์ 9 หลักท้าย → ไม่เจอค่อยเทียบชื่อ)
   async function importTracking() {
     if (!trackText.trim()) {
       setFlash({ msg: 'วางข้อมูลจากไฟล์ Flash ก่อนนะคะ', ok: false })
       return
+    }
+    const digits = (s) => (s || '').replace(/\D/g, '')
+    const last9 = (s) => {
+      const d = digits(s)
+      return d.length >= 9 ? d.slice(-9) : d
     }
     const norm = (s) => (s || '').replace(/คุณ/g, '').replace(/\([^)]*\)/g, '').replace(/\s+/g, '').trim()
     const lines = trackText.split('\n').map((l) => l.trim()).filter(Boolean)
@@ -367,14 +372,21 @@ export default function SnailOrderForm() {
     lines.forEach((line) => {
       const tk = (line.match(/TH[0-9A-Z]{8,}/i) || [])[0]
       if (!tk) return
-      const phRaw = (line.match(/(?<!\d)0(?:[\s.\-]?\d){8,9}/) || [])[0]
-      const ph = phRaw ? phRaw.replace(/\D/g, '') : ''
-      let fname = line.replace(tk, '')
-      if (phRaw) fname = fname.replace(phRaw, '')
-      const nname = norm(fname.replace(/\t/g, ' '))
+      const rest = line.replace(tk, ' ') // เอาเลขพัสดุออกก่อน กันสับสนกับเบอร์
+      const tokens = rest.split(/\s+/).filter(Boolean)
+      // หาเบอร์แบบทีละช่อง (ไม่ให้ลามข้ามช่องว่างไปกินบ้านเลขที่)
+      const phoneIdx = tokens.findIndex((t) => {
+        const d = digits(t)
+        return d.length >= 9 && d.length <= 10
+      })
+      const flashPhone = phoneIdx >= 0 ? last9(tokens[phoneIdx]) : ''
+      // ชื่อ = ช่องก่อนเบอร์ (ตัดเลขลำดับหน้าสุดออก)
+      let nameTokens = phoneIdx > 0 ? tokens.slice(0, phoneIdx) : tokens
+      nameTokens = nameTokens.filter((t, i) => !(i === 0 && /^\d{1,3}$/.test(t)))
+      const nname = norm(nameTokens.join(' '))
       let idx = -1
-      // 1) จับด้วยเบอร์
-      if (ph) idx = next.findIndex((o, i) => !used.has(i) && (o.phone || '').replace(/\D/g, '').includes(ph))
+      // 1) จับด้วยเบอร์ (9 หลักท้าย กันเคส 0 หน้าหาย)
+      if (flashPhone) idx = next.findIndex((o, i) => !used.has(i) && last9(o.phone) === flashPhone)
       // 2) ไม่เจอ → จับด้วยชื่อจริง
       if (idx < 0 && nname)
         idx = next.findIndex((o, i) => {
@@ -383,7 +395,7 @@ export default function SnailOrderForm() {
           return on && (on === nname || on.includes(nname) || nname.includes(on))
         })
       if (idx < 0) {
-        missed.push(tk)
+        missed.push(nname || tk)
         return
       }
       used.add(idx)
@@ -399,7 +411,7 @@ export default function SnailOrderForm() {
       }
     }
     setFlash({
-      msg: `📦 จับคู่เลขพัสดุได้ ${matched} รายการ${missed.length ? ` · หาเจ้าของไม่เจอ ${missed.length}` : ''}`,
+      msg: `📦 จับคู่ได้ ${matched} รายการ${missed.length ? ` · จับไม่ได้: ${missed.join(', ')}` : ''}`,
       ok: matched > 0,
     })
     if (matched > 0) setTrackText('')
