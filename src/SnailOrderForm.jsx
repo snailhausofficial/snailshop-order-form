@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { supabase, TABLE, STATUSES, genOrderCode } from './supabase'
 
 /* ================= ตัวแยกข้อความอัตโนมัติ ================= */
@@ -277,6 +277,24 @@ export default function SnailOrderForm() {
     const col = colMap[field] || field
     const val = field === 'qty' ? parseInt(rawValue) || 1 : rawValue
     await supabase.from(TABLE).update({ [col]: val }).eq('id', id)
+  }
+  // ยืนยันก่อนบันทึกการแก้ไข (กันเผลอกดช่องแล้วพิมพ์ทับ)
+  const FIELD_LABELS = { tiktok: 'ชื่อ TikTok', qty: 'จำนวน', note: 'หมายเหตุ', date: 'วันส่ง', name: 'ชื่อจริง', addr: 'ที่อยู่', phone: 'เบอร์', tracking: 'เลขพัสดุ' }
+  const editRef = useRef({})
+  function cellFocus(id, field, value) {
+    editRef.current = { id, field, value: value ?? '' }
+  }
+  function cellBlur(id, field, value) {
+    const o = editRef.current
+    editRef.current = {}
+    if (!o || o.id !== id || o.field !== field) return
+    if (String(o.value) === String(value)) return // ไม่ได้เปลี่ยน = ไม่ต้องถาม
+    const label = FIELD_LABELS[field] || field
+    if (confirm(`ยืนยันแก้ "${label}" เป็น "${value || '(ว่าง)'}" ?`)) {
+      saveField(id, field, value)
+    } else {
+      updateField(id, field, o.value) // ยกเลิก → คืนค่าเดิม
+    }
   }
 
   async function del(o) {
@@ -641,41 +659,41 @@ export default function SnailOrderForm() {
                       <td className="acc">
                         <input className="cell-input" value={o.tiktok || ''} placeholder="—"
                           onChange={(e) => updateField(o.id, 'tiktok', e.target.value)}
-                          onBlur={(e) => saveField(o.id, 'tiktok', e.target.value)} />
+                          onFocus={(e) => cellFocus(o.id, 'tiktok', e.target.value)} onBlur={(e) => cellBlur(o.id, 'tiktok', e.target.value)} />
                         <input className="cell-input" style={{ fontSize: 11, color: '#0a7a3f', fontWeight: 600 }}
                           value={o.tracking || ''} placeholder="📦 เลขพัสดุ (วางเองได้)"
                           onChange={(e) => updateField(o.id, 'tracking', e.target.value)}
-                          onBlur={(e) => saveField(o.id, 'tracking', e.target.value)} />
+                          onFocus={(e) => cellFocus(o.id, 'tracking', e.target.value)} onBlur={(e) => cellBlur(o.id, 'tracking', e.target.value)} />
                       </td>
                       <td>
                         <input className="cell-input cell-qty" type="number" min="1" value={o.qty}
                           onChange={(e) => updateField(o.id, 'qty', e.target.value)}
-                          onBlur={(e) => saveField(o.id, 'qty', e.target.value)} />
+                          onFocus={(e) => cellFocus(o.id, 'qty', e.target.value)} onBlur={(e) => cellBlur(o.id, 'qty', e.target.value)} />
                       </td>
                       <td>
                         <input className="cell-input" value={o.note === '-' ? '' : o.note || ''} placeholder="-"
                           onChange={(e) => updateField(o.id, 'note', e.target.value)}
-                          onBlur={(e) => saveField(o.id, 'note', e.target.value)} />
+                          onFocus={(e) => cellFocus(o.id, 'note', e.target.value)} onBlur={(e) => cellBlur(o.id, 'note', e.target.value)} />
                       </td>
                       <td>
                         <input className="cell-input cell-date" value={o.date || ''} placeholder="—"
                           onChange={(e) => updateField(o.id, 'date', e.target.value)}
-                          onBlur={(e) => saveField(o.id, 'date', e.target.value)} />
+                          onFocus={(e) => cellFocus(o.id, 'date', e.target.value)} onBlur={(e) => cellBlur(o.id, 'date', e.target.value)} />
                       </td>
                       <td>
                         <input className="cell-input" value={o.name || ''} placeholder="—"
                           onChange={(e) => updateField(o.id, 'name', e.target.value)}
-                          onBlur={(e) => saveField(o.id, 'name', e.target.value)} />
+                          onFocus={(e) => cellFocus(o.id, 'name', e.target.value)} onBlur={(e) => cellBlur(o.id, 'name', e.target.value)} />
                       </td>
                       <td className="addr">
                         <textarea className="cell-input cell-addr" value={o.addr || ''} placeholder="—" rows={2}
                           onChange={(e) => updateField(o.id, 'addr', e.target.value)}
-                          onBlur={(e) => saveField(o.id, 'addr', e.target.value)} />
+                          onFocus={(e) => cellFocus(o.id, 'addr', e.target.value)} onBlur={(e) => cellBlur(o.id, 'addr', e.target.value)} />
                       </td>
                       <td>
                         <input className="cell-input" value={o.phone || ''} placeholder="—"
                           onChange={(e) => updateField(o.id, 'phone', e.target.value)}
-                          onBlur={(e) => saveField(o.id, 'phone', e.target.value)} />
+                          onFocus={(e) => cellFocus(o.id, 'phone', e.target.value)} onBlur={(e) => cellBlur(o.id, 'phone', e.target.value)} />
                       </td>
                       <td className="no-print">
                         <select className="status-select" value={o.status || STATUSES[0]} onChange={(e) => updateStatus(o, e.target.value)}>
