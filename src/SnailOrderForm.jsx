@@ -125,6 +125,8 @@ export default function SnailOrderForm() {
   const [filterDate, setFilterDate] = useState('') // '' = ทั้งหมด
   const [trackText, setTrackText] = useState('')
   const [showTrack, setShowTrack] = useState(false)
+  const [unmatched, setUnmatched] = useState([])
+  const [copiedBtn, setCopiedBtn] = useState('')
   const [unlocked, setUnlocked] = useState(() => {
     try {
       return localStorage.getItem('snail_admin_ok') === '1'
@@ -206,17 +208,18 @@ export default function SnailOrderForm() {
     if (!online) {
       const withId = list.map((o) => ({ ...o, id: 'local-' + Date.now() + Math.random(), code: genOrderCode(), status: STATUSES[0], tracking: '' }))
       setOrders((prev) => [...prev, ...withId])
-      return withId.length
+      return withId
     }
     setBusy(true)
     const { data, error } = await supabase.from(TABLE).insert(list.map(toRow)).select()
     setBusy(false)
     if (error) {
       setFlash({ msg: 'บันทึกไม่สำเร็จ: ' + error.message, ok: false })
-      return 0
+      return []
     }
-    setOrders((prev) => [...prev, ...(data || []).map(fromRow)])
-    return (data || []).length
+    const rows = (data || []).map(fromRow)
+    setOrders((prev) => [...prev, ...rows])
+    return rows
   }
 
   // วางสรุป + ที่อยู่ (คนละช่อง) → รวมกัน → เข้าตารางเลย ไม่ต้องตรวจ
@@ -243,13 +246,18 @@ export default function SnailOrderForm() {
       setFlash({ msg: 'แยกไม่ได้ ลองเช็กว่ามีบรรทัด “แอคเค้าตต” ไหม', ok: false })
       return
     }
-    const n = await saveOrders(parsed)
-    if (n > 0) {
+    const added = await saveOrders(parsed)
+    if (added.length > 0) {
       const d = parsed.find((o) => o.date)?.date
       if (d) setFilterDate(d)
       setPSummary('')
       setPAddr('')
-      setFlash({ msg: `✅ เพิ่ม ${n} ออเดอร์แล้ว — แก้ไขในตารางได้เลย`, ok: true })
+      if (added.length === 1) {
+        // เพิ่มคนเดียว → เด้ง popup ลิงก์ทันที (ไม่ต้องเลื่อนไปกด 🔗)
+        copyLink(added[0])
+      } else {
+        setFlash({ msg: `✅ เพิ่ม ${added.length} ออเดอร์แล้ว — แก้ไขในตารางได้เลย`, ok: true })
+      }
     }
   }
 
@@ -327,51 +335,59 @@ export default function SnailOrderForm() {
     setOrders((prev) => prev.filter((o) => !ids.includes(o.id)))
   }
 
-  // จับคู่เลขพัสดุ Flash (ตัดเลขพัสดุออกก่อน → เทียบเบอร์ 9 หลักท้าย → ไม่เจอค่อยเทียบชื่อ)
+  // ตัดคำนำหน้า + วรรณยุกต์เพี้ยน + ตัวคล้าย เพื่อเทียบชื่อแบบยืดหยุ่น
+  const digitsOf = (s) => (s || '').replace(/\D/g, '')
+  const last9 = (s) => {
+    const d = digitsOf(s)
+    return d.length >= 9 ? d.slice(-9) : d
+  }
+  const normName = (s) =>
+    (s || '')
+      .replace(/นางสาว|น\.ส\.?|นส\.?|นาง|นาย|คุณ|ร้าน/g, '')
+      .replace(/[\u0E48-\u0E4E\u0E31\u0E47]/g, '') // วรรณยุกต์/ไม้ไต่คู้/นิคหิต
+      .replace(/ฎ/g, 'ฏ')
+      .replace(/\([^)]*\)/g, '')
+      .replace(/\s+/g, '')
+      .trim()
+  // เทียบชื่อ: สั้น (<4) ต้องตรงเป๊ะ กันจับมั่ว, ยาวใช้ contains ได้
+  const nameHit = (a, b) => {
+    if (!a || !b) return false
+    if (a === b) return true
+    if (a.length >= 4 && b.length >= 4) return a.includes(b) || b.includes(a)
+    return false
+  }
+
+  // จับคู่เลขพัสดุ Flash (เบอร์ 9 หลักท้าย → ชื่อยืดหยุ่น) + เก็บรายการจับไม่ได้ไว้จับมือ
   async function importTracking() {
     if (!trackText.trim()) {
       setFlash({ msg: 'วางข้อมูลจากไฟล์ Flash ก่อนนะคะ', ok: false })
       return
     }
-    const digits = (s) => (s || '').replace(/\D/g, '')
-    const last9 = (s) => {
-      const d = digits(s)
-      return d.length >= 9 ? d.slice(-9) : d
-    }
-    const norm = (s) => (s || '').replace(/คุณ/g, '').replace(/\([^)]*\)/g, '').replace(/\s+/g, '').trim()
     const lines = trackText.split('\n').map((l) => l.trim()).filter(Boolean)
     const next = orders.map((o) => ({ ...o }))
     const used = new Set()
     const changed = []
     let matched = 0
-    const missed = []
+    const missedRows = []
     lines.forEach((line) => {
       const tk = (line.match(/TH[0-9A-Z]{8,}/i) || [])[0]
       if (!tk) return
-      const rest = line.replace(tk, ' ') // เอาเลขพัสดุออกก่อน กันสับสนกับเบอร์
+      const rest = line.replace(tk, ' ')
       const tokens = rest.split(/\s+/).filter(Boolean)
-      // หาเบอร์แบบทีละช่อง (ไม่ให้ลามข้ามช่องว่างไปกินบ้านเลขที่)
       const phoneIdx = tokens.findIndex((t) => {
-        const d = digits(t)
+        const d = digitsOf(t)
         return d.length >= 9 && d.length <= 10
       })
       const flashPhone = phoneIdx >= 0 ? last9(tokens[phoneIdx]) : ''
-      // ชื่อ = ช่องก่อนเบอร์ (ตัดเลขลำดับหน้าสุดออก)
       let nameTokens = phoneIdx > 0 ? tokens.slice(0, phoneIdx) : tokens
       nameTokens = nameTokens.filter((t, i) => !(i === 0 && /^\d{1,3}$/.test(t)))
-      const nname = norm(nameTokens.join(' '))
+      const rawName = nameTokens.join(' ')
+      const nn = normName(rawName)
       let idx = -1
-      // 1) จับด้วยเบอร์ (9 หลักท้าย กันเคส 0 หน้าหาย)
       if (flashPhone) idx = next.findIndex((o, i) => !used.has(i) && last9(o.phone) === flashPhone)
-      // 2) ไม่เจอ → จับด้วยชื่อจริง
-      if (idx < 0 && nname)
-        idx = next.findIndex((o, i) => {
-          if (used.has(i)) return false
-          const on = norm(o.name)
-          return on && (on === nname || on.includes(nname) || nname.includes(on))
-        })
+      if (idx < 0 && nn) idx = next.findIndex((o, i) => !used.has(i) && nameHit(normName(o.name), nn))
       if (idx < 0) {
-        missed.push(nname || tk)
+        missedRows.push({ tk, name: rawName })
         return
       }
       used.add(idx)
@@ -386,11 +402,21 @@ export default function SnailOrderForm() {
         await supabase.from(TABLE).update({ tracking: o.tracking, status: o.status }).eq('id', o.id)
       }
     }
+    setUnmatched(missedRows)
     setFlash({
-      msg: `📦 จับคู่ได้ ${matched} รายการ${missed.length ? ` · จับไม่ได้: ${missed.join(', ')}` : ''}`,
+      msg: `📦 จับคู่ได้ ${matched} รายการ${missedRows.length ? ` · จับไม่ได้ ${missedRows.length} (เลือกเจ้าของด้านล่าง)` : ''}`,
       ok: matched > 0,
     })
     if (matched > 0) setTrackText('')
+  }
+
+  // จับมือ: เลือกออเดอร์ให้เลขพัสดุที่ระบบจับไม่ได้
+  async function manualMatch(orderId, tk) {
+    setOrders((prev) => prev.map((x) => (x.id === orderId ? { ...x, tracking: tk, status: 'ส่งแล้ว' } : x)))
+    setUnmatched((prev) => prev.filter((u) => u.tk !== tk))
+    if (online) {
+      await supabase.from(TABLE).update({ tracking: tk, status: 'ส่งแล้ว' }).eq('id', orderId)
+    }
   }
 
   const loadDemo = () =>
@@ -433,6 +459,11 @@ export default function SnailOrderForm() {
     return out
   }
 
+  function markCopied(key) {
+    setCopiedBtn(key)
+    setTimeout(() => setCopiedBtn(''), 1000)
+  }
+
   async function copyForPrint(withAddr) {
     if (visible.length === 0) {
       setFlash({ msg: 'ยังไม่มีออเดอร์ให้คัดลอกค่ะ 🐌', ok: false })
@@ -442,7 +473,7 @@ export default function SnailOrderForm() {
     setCopyText(text)
     try {
       await navigator.clipboard.writeText(text)
-      setFlash({ msg: '📋 คัดลอกแล้ว — เปิดแอป Peripage แล้ววาง (paste) ได้เลย', ok: true })
+      markCopied(withAddr ? 'addr' : 'summary')
     } catch {
       setFlash({ msg: 'คัดลอกอัตโนมัติไม่ได้ — กดค้างในช่องข้างล่างแล้วก๊อปเองได้', ok: false })
     }
@@ -531,8 +562,12 @@ export default function SnailOrderForm() {
                   <option key={d} value={d}>รอบส่ง {d}</option>
                 ))}
               </select>
-              <button className="btn btn-ghost btn-sm" onClick={() => copyForPrint(true)}>📋 คัดลอก (มีที่อยู่)</button>
-              <button className="btn btn-ghost btn-sm" onClick={() => copyForPrint(false)}>📋 คัดลอก (สรุป)</button>
+              <button className="btn btn-ghost btn-sm" style={copiedBtn === 'addr' ? { background: 'var(--ok)', color: '#fff', borderColor: 'var(--ok)' } : undefined} onClick={() => copyForPrint(true)}>
+                {copiedBtn === 'addr' ? '✓ คัดลอกแล้ว' : '📋 คัดลอก (มีที่อยู่)'}
+              </button>
+              <button className="btn btn-ghost btn-sm" style={copiedBtn === 'summary' ? { background: 'var(--ok)', color: '#fff', borderColor: 'var(--ok)' } : undefined} onClick={() => copyForPrint(false)}>
+                {copiedBtn === 'summary' ? '✓ คัดลอกแล้ว' : '📋 คัดลอก (สรุป)'}
+              </button>
               <button className="btn btn-ghost btn-sm" onClick={() => setShowTrack((v) => !v)}>📦 ใส่เลขพัสดุ</button>
               <button className="btn btn-ghost btn-sm" onClick={printLabels}>🖨️ ปริ้นใบปะหน้า</button>
               <button className="btn btn-ghost btn-sm" onClick={clearRound}>🗑️ ล้างรอบนี้</button>
@@ -551,6 +586,27 @@ export default function SnailOrderForm() {
                 placeholder={'ตัวอย่าง (ก๊อปจาก Excel ทั้งแถวได้):\nTH010395VG1X0C\tคุณวิลาวัลย์\t0853288992\nTH013195VFTF9A0\tคุณอภิญญา\t0930069077'}
               />
               <button className="btn btn-primary" style={{ marginTop: 10 }} onClick={importTracking}>🔗 จับคู่เลขพัสดุ (ด้วยเบอร์โทร)</button>
+            </div>
+          )}
+
+          {unmatched.length > 0 && (
+            <div className="copy-box no-print" style={{ borderColor: 'var(--pink-deep)' }}>
+              <div className="copy-head">
+                <span>📦 จับไม่ได้ {unmatched.length} — เลือกเจ้าของเอง</span>
+                <button className="mini-x" onClick={() => setUnmatched([])}>✕ ปิด</button>
+              </div>
+              {unmatched.map((u) => (
+                <div key={u.tk} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 12, fontFamily: 'monospace', fontWeight: 700 }}>{u.tk}</span>
+                  {u.name && <span style={{ fontSize: 12, color: 'var(--muted)' }}>({u.name})</span>}
+                  <select className="status-select" defaultValue="" onChange={(e) => { if (e.target.value) manualMatch(e.target.value, u.tk) }}>
+                    <option value="">— เลือกออเดอร์ —</option>
+                    {orders.filter((o) => !o.tracking).map((o) => (
+                      <option key={o.id} value={o.id}>{(o.tiktok || o.name || '?') + ' · ' + (o.phone || 'ไม่มีเบอร์')}</option>
+                    ))}
+                  </select>
+                </div>
+              ))}
             </div>
           )}
 
@@ -683,15 +739,15 @@ export default function SnailOrderForm() {
             <div style={{ display: 'flex', gap: 8 }}>
               <button
                 className="btn btn-primary"
-                style={{ flex: 1 }}
+                style={{ flex: 1, ...(copiedBtn === 'link' ? { background: 'var(--ok)' } : {}) }}
                 onClick={async () => {
                   try {
                     await navigator.clipboard.writeText(linkModal.link)
-                    setFlash({ msg: '📋 คัดลอกแล้ว', ok: true })
+                    markCopied('link')
                   } catch {}
                 }}
               >
-                📋 คัดลอก
+                {copiedBtn === 'link' ? '✓ คัดลอกแล้ว' : '📋 คัดลอก'}
               </button>
               <a className="btn btn-ghost" style={{ flex: 1, textDecoration: 'none' }} href={linkModal.link} target="_blank" rel="noreferrer">
                 ↗ เปิดดู
