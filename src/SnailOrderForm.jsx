@@ -112,10 +112,13 @@ export function splitOrders(raw) {
 
 const BLANK = { tiktok: '', qty: 1, type: '', date: '', name: '', phone: '', addr: '', note: '' }
 
+// โดเมนหลักของเว็บ (ลิงก์ที่ส่งให้ลูกค้าจะใช้ตัวนี้เสมอ) — เปลี่ยนได้ที่นี่ หรือตั้ง env VITE_SITE_URL
+const SITE_URL = import.meta.env.VITE_SITE_URL || 'https://order.snailshop.org'
+
 export default function SnailOrderForm() {
   const [orders, setOrders] = useState([])
-  const [form, setForm] = useState({ ...BLANK })
-  const [paste, setPaste] = useState('')
+  const [pSummary, setPSummary] = useState('')
+  const [pAddr, setPAddr] = useState('')
   const [flash, setFlash] = useState({ msg: '', ok: true })
   const [busy, setBusy] = useState(false)
   const [copyText, setCopyText] = useState('')
@@ -199,8 +202,6 @@ export default function SnailOrderForm() {
     })()
   }, [online, unlocked])
 
-  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value })
-
   async function saveOrders(list) {
     if (!online) {
       const withId = list.map((o) => ({ ...o, id: 'local-' + Date.now() + Math.random(), code: genOrderCode(), status: STATUSES[0], tracking: '' }))
@@ -218,31 +219,14 @@ export default function SnailOrderForm() {
     return (data || []).length
   }
 
-  function fillFromPaste() {
-    if (!paste.trim()) {
-      setFlash({ msg: 'ยังไม่มีข้อความให้แยก วางข้อความก่อนนะคะ', ok: false })
+  // วางสรุป + ที่อยู่ (คนละช่อง) → รวมกัน → เข้าตารางเลย ไม่ต้องตรวจ
+  async function addFromBoxes() {
+    const combined = (pSummary + '\n\n' + pAddr).trim()
+    if (!combined) {
+      setFlash({ msg: 'วางข้อความก่อนนะคะ', ok: false })
       return
     }
-    const o = parseMessage(paste)
-    setForm({
-      tiktok: o.tiktok,
-      qty: o.qty || 1,
-      type: o.type,
-      date: o.date,
-      name: o.name,
-      phone: o.phone,
-      addr: o.addr,
-      note: o.note === '-' ? '' : o.note,
-    })
-    setFlash({ msg: '✅ แยกข้อมูลแล้ว — เช็กความถูกต้องแล้วกด “เพิ่มลงตาราง”', ok: true })
-  }
-
-  async function addManyFromPaste() {
-    if (!paste.trim()) {
-      setFlash({ msg: 'ยังไม่มีข้อความให้แยก วางข้อความก่อนนะคะ', ok: false })
-      return
-    }
-    const parsed = splitOrders(paste)
+    const parsed = splitOrders(combined)
       .map((b) => parseMessage(b))
       .filter((o) => o.tiktok || o.name || o.qty)
       .map((o) => ({
@@ -256,43 +240,35 @@ export default function SnailOrderForm() {
         note: o.note || '-',
       }))
     if (parsed.length === 0) {
-      setFlash({ msg: 'แยกไม่ได้ ลองเช็กว่ามีบรรทัด “แอคเค้าตต :” ในแต่ละคนไหม', ok: false })
+      setFlash({ msg: 'แยกไม่ได้ ลองเช็กว่ามีบรรทัด “แอคเค้าตต” ไหม', ok: false })
       return
     }
     const n = await saveOrders(parsed)
     if (n > 0) {
       const d = parsed.find((o) => o.date)?.date
       if (d) setFilterDate(d)
-      setForm({ ...BLANK })
-      setPaste('')
-      setFlash({ msg: `✅ เพิ่ม ${n} ออเดอร์แล้ว${online ? ' (บันทึกลงฐานข้อมูล)' : ''}`, ok: true })
+      setPSummary('')
+      setPAddr('')
+      setFlash({ msg: `✅ เพิ่ม ${n} ออเดอร์แล้ว — แก้ไขในตารางได้เลย`, ok: true })
     }
   }
 
-  async function addOrder() {
-    const tiktok = form.tiktok.trim()
-    const name = form.name.trim()
-    if (!tiktok && !name) {
-      alert('ใส่ชื่อ TikTok หรือชื่อผู้รับอย่างน้อย 1 อย่างนะคะ 🐌')
-      return
-    }
-    const o = {
-      tiktok,
-      qty: parseInt(form.qty) || 1,
-      type: form.type.trim(),
-      date: form.date.trim(),
-      name,
-      phone: form.phone.trim(),
-      addr: form.addr.trim(),
-      note: form.note.trim() || '-',
-    }
-    const n = await saveOrders([o])
-    if (n > 0) {
-      if (o.date) setFilterDate(o.date)
-      setForm({ ...BLANK, date: form.date, qty: 1 })
-      setPaste('')
-      setFlash({ msg: '', ok: true })
-    }
+  // เพิ่มแถวว่างไว้พิมพ์เองในตาราง
+  async function addEmptyRow() {
+    const blank = { tiktok: '', qty: 1, type: '', date: filterDate || '', name: '', phone: '', addr: '', note: '-' }
+    await saveOrders([blank])
+  }
+
+  // แก้ค่าในตาราง (พิมพ์ทับได้เลย)
+  function updateField(id, field, value) {
+    setOrders((prev) => prev.map((x) => (x.id === id ? { ...x, [field]: value } : x)))
+  }
+  async function saveField(id, field, rawValue) {
+    if (!online) return
+    const colMap = { date: 'send_date' }
+    const col = colMap[field] || field
+    const val = field === 'qty' ? parseInt(rawValue) || 1 : rawValue
+    await supabase.from(TABLE).update({ [col]: val }).eq('id', id)
   }
 
   async function del(o) {
@@ -329,7 +305,7 @@ export default function SnailOrderForm() {
       }
       setOrders((prev) => prev.map((x) => (x === o ? { ...x, code } : x)))
     }
-    const link = `${window.location.origin}/ord/${code}`
+    const link = `${SITE_URL}/ord/${code}`
     setLinkModal({ link, name: o.name || o.tiktok || '' })
     try {
       await navigator.clipboard.writeText(link)
@@ -512,72 +488,29 @@ export default function SnailOrderForm() {
         {/* ===== FORM ===== */}
         <section className="card form-card no-print">
           <h2>➕ เพิ่มออเดอร์</h2>
-          <p className="hint">วางข้อความจากแชทแล้วให้ระบบแยกให้ หรือกรอกเองก็ได้</p>
+          <p className="hint">วางข้อความ 2 ช่อง แล้วกดเข้าตารางเลย · แก้ตัวเลข/ข้อมูลในตารางได้ทีหลัง</p>
 
           <div className="paste-wrap">
-            <label>🪄 วางข้อความจากแชท LINE</label>
+            <label>1) ส่วนสรุป (แอค / จำนวน / วันส่ง)</label>
             <textarea
-              value={paste}
-              onChange={(e) => setPaste(e.target.value)}
-              placeholder="วาง 1 คน หรือหลายคนต่อกันก็ได้ (มีเลข 1. 2. 3. คั่นหรือไม่มีก็ได้)..."
+              value={pSummary}
+              onChange={(e) => setPSummary(e.target.value)}
+              placeholder={'ขอบคุณมากค่ะ\nแอคเค้าตต : ...\nสถานะ : ... ชุด\nส่งของวันที่ : 16/09'}
             />
-            <div className="paste-row">
-              <button className="btn btn-ghost" onClick={fillFromPaste}>🪄 แยก 1 คน (เช็กก่อน)</button>
-              <button className="btn btn-primary" onClick={addManyFromPaste}>📥 เพิ่มหลายคนทีเดียว</button>
-            </div>
+            <label style={{ marginTop: 12 }}>2) ที่อยู่ลูกค้า (ชื่อ / เบอร์ / ที่อยู่)</label>
+            <textarea
+              value={pAddr}
+              onChange={(e) => setPAddr(e.target.value)}
+              placeholder={'ชื่อจริง เบอร์\nที่อยู่เต็ม + รหัสไปรษณีย์'}
+            />
+            <button className="btn btn-primary" style={{ marginTop: 12 }} onClick={addFromBoxes}>➕ เพิ่มลงตารางเลย</button>
             <p className="parsed-flash" style={{ color: flash.ok ? 'var(--ok)' : 'var(--pink-deep)' }}>{flash.msg}</p>
-            <p className="mini-clear" onClick={() => { setPaste(''); setFlash({ msg: '', ok: true }) }}>ล้างช่องวาง</p>
+            <p className="mini-clear" onClick={() => { setPSummary(''); setPAddr(''); setFlash({ msg: '', ok: true }) }}>ล้างช่องวาง</p>
           </div>
 
-          <div className="divider">แล้วเช็ก / แก้ไขได้ที่นี่</div>
+          <div className="divider">หรือ</div>
+          <button className="btn btn-ghost" style={{ width: '100%' }} onClick={addEmptyRow}>➕ เพิ่มแถวว่าง (พิมพ์เองในตาราง)</button>
 
-          <div className="field">
-            <label>ชื่อแอค TikTok</label>
-            <input value={form.tiktok} onChange={set('tiktok')} placeholder="เช่น snail.nails" />
-          </div>
-
-          <div className="grid2">
-            <div className="field">
-              <label>จำนวน (ชุด)</label>
-              <input type="number" min="1" value={form.qty} onChange={set('qty')} />
-            </div>
-            <div className="field">
-              <label>วันส่ง</label>
-              <input value={form.date} onChange={set('date')} placeholder="16/09" />
-            </div>
-          </div>
-
-          <div className="field">
-            <label>ประเภท</label>
-            <input value={form.type} onChange={set('type')} placeholder="เช่น อัลมอนด์สั้น / เหลี่ยมยาว" />
-          </div>
-
-          <div className="field">
-            <label>ชื่อจริง (ผู้รับ)</label>
-            <input value={form.name} onChange={set('name')} placeholder="ชื่อ–นามสกุลผู้รับ" />
-          </div>
-
-          <div className="field">
-            <label>เบอร์โทร</label>
-            <input value={form.phone} onChange={set('phone')} placeholder="0xx-xxx-xxxx (หลายเบอร์คั่นด้วย /)" />
-          </div>
-
-          <div className="field">
-            <label>ที่อยู่</label>
-            <textarea value={form.addr} onChange={set('addr')} placeholder="บ้านเลขที่ ตำบล อำเภอ จังหวัด รหัสไปรษณีย์" />
-          </div>
-
-          <div className="field">
-            <label>หมายเหตุ / ของแถม</label>
-            <input
-              value={form.note}
-              onChange={set('note')}
-              onKeyDown={(e) => { if (e.key === 'Enter') addOrder() }}
-              placeholder="เช่น กล่อง, 401, ไพร์มเมอร์ (ไม่มีใส่ -)"
-            />
-          </div>
-
-          <button className="btn btn-primary" onClick={addOrder}>🐌 เพิ่มลงตาราง</button>
           <p className="save-note">
             {online
               ? '* บันทึกลง Supabase อัตโนมัติ — เปิดเครื่องไหนก็เห็นตารางเดียวกัน'
@@ -650,15 +583,41 @@ export default function SnailOrderForm() {
                   {visible.map((o, i) => (
                     <tr key={o.id ?? i}>
                       <td className="acc">
-                        {o.tiktok || '—'}
+                        <input className="cell-input" value={o.tiktok || ''} placeholder="—"
+                          onChange={(e) => updateField(o.id, 'tiktok', e.target.value)}
+                          onBlur={(e) => saveField(o.id, 'tiktok', e.target.value)} />
                         {o.tracking && <div className="track-tag">📦 {o.tracking}</div>}
                       </td>
-                      <td className="qty">{o.qty}</td>
-                      <td>{o.note && o.note !== '-' ? <span className="note-tag">{o.note}</span> : '-'}</td>
-                      <td>{o.date || '—'}</td>
-                      <td>{o.name || '—'}</td>
-                      <td className="addr">{o.addr || '—'}</td>
-                      <td>{o.phone || '—'}</td>
+                      <td>
+                        <input className="cell-input cell-qty" type="number" min="1" value={o.qty}
+                          onChange={(e) => updateField(o.id, 'qty', e.target.value)}
+                          onBlur={(e) => saveField(o.id, 'qty', e.target.value)} />
+                      </td>
+                      <td>
+                        <input className="cell-input" value={o.note === '-' ? '' : o.note || ''} placeholder="-"
+                          onChange={(e) => updateField(o.id, 'note', e.target.value)}
+                          onBlur={(e) => saveField(o.id, 'note', e.target.value)} />
+                      </td>
+                      <td>
+                        <input className="cell-input cell-date" value={o.date || ''} placeholder="—"
+                          onChange={(e) => updateField(o.id, 'date', e.target.value)}
+                          onBlur={(e) => saveField(o.id, 'date', e.target.value)} />
+                      </td>
+                      <td>
+                        <input className="cell-input" value={o.name || ''} placeholder="—"
+                          onChange={(e) => updateField(o.id, 'name', e.target.value)}
+                          onBlur={(e) => saveField(o.id, 'name', e.target.value)} />
+                      </td>
+                      <td className="addr">
+                        <textarea className="cell-input cell-addr" value={o.addr || ''} placeholder="—" rows={2}
+                          onChange={(e) => updateField(o.id, 'addr', e.target.value)}
+                          onBlur={(e) => saveField(o.id, 'addr', e.target.value)} />
+                      </td>
+                      <td>
+                        <input className="cell-input" value={o.phone || ''} placeholder="—"
+                          onChange={(e) => updateField(o.id, 'phone', e.target.value)}
+                          onBlur={(e) => saveField(o.id, 'phone', e.target.value)} />
+                      </td>
                       <td className="no-print">
                         <select className="status-select" value={o.status || STATUSES[0]} onChange={(e) => updateStatus(o, e.target.value)}>
                           {STATUSES.map((s) => (
