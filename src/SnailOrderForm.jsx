@@ -642,7 +642,10 @@ export default function SnailOrderForm() {
                         <input className="cell-input" value={o.tiktok || ''} placeholder="—"
                           onChange={(e) => updateField(o.id, 'tiktok', e.target.value)}
                           onBlur={(e) => saveField(o.id, 'tiktok', e.target.value)} />
-                        {o.tracking && <div className="track-tag">📦 {o.tracking}</div>}
+                        <input className="cell-input" style={{ fontSize: 11, color: '#0a7a3f', fontWeight: 600 }}
+                          value={o.tracking || ''} placeholder="📦 เลขพัสดุ (วางเองได้)"
+                          onChange={(e) => updateField(o.id, 'tracking', e.target.value)}
+                          onBlur={(e) => saveField(o.id, 'tracking', e.target.value)} />
                       </td>
                       <td>
                         <input className="cell-input cell-qty" type="number" min="1" value={o.qty}
