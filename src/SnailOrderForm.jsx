@@ -127,34 +127,52 @@ export default function SnailOrderForm() {
   const [showTrack, setShowTrack] = useState(false)
   const [unmatched, setUnmatched] = useState([])
   const [copiedBtn, setCopiedBtn] = useState('')
-  const [unlocked, setUnlocked] = useState(() => {
-    try {
-      return localStorage.getItem('snail_admin_ok') === '1'
-    } catch {
-      return false
-    }
-  })
+  // ===== ล็อกอินพนักงาน (Supabase Auth) =====
+  const [unlocked, setUnlocked] = useState(false)
+  const [authChecked, setAuthChecked] = useState(false) // เช็ก session เสร็จหรือยัง (กันหน้าล็อกกะพริบ)
+  const [email, setEmail] = useState('')
   const [pw, setPw] = useState('')
   const [lockErr, setLockErr] = useState(false)
+  const [loggingIn, setLoggingIn] = useState(false)
   const [linkModal, setLinkModal] = useState(null)
 
-  const ADMIN_CODE = import.meta.env.VITE_ADMIN_CODE || 'snailshop'
-  function tryUnlock() {
-    if (pw === ADMIN_CODE) {
-      try {
-        localStorage.setItem('snail_admin_ok', '1')
-      } catch {}
+  // เปิดหน้ามา → เช็กว่าเคยล็อกอินค้างไว้ไหม + คอยฟังการล็อกอิน/ล็อกเอาต์
+  useEffect(() => {
+    if (!supabase) {
+      // ยังไม่ต่อฐานข้อมูล = โหมดทดลอง ข้อมูลอยู่ในเครื่อง ไม่ต้องล็อกอิน
       setUnlocked(true)
-      setLockErr(false)
-    } else {
+      setAuthChecked(true)
+      return
+    }
+    supabase.auth.getSession().then(({ data }) => {
+      setUnlocked(!!data.session)
+      setAuthChecked(true)
+    })
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUnlocked(!!session)
+    })
+    return () => sub.subscription.unsubscribe()
+  }, [])
+
+  async function tryUnlock() {
+    if (!email.trim() || !pw) {
       setLockErr(true)
+      return
+    }
+    setLoggingIn(true)
+    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password: pw })
+    setLoggingIn(false)
+    if (error) {
+      setLockErr(true)
+    } else {
+      setLockErr(false)
+      setPw('')
     }
   }
-  function logout() {
-    try {
-      localStorage.removeItem('snail_admin_ok')
-    } catch {}
-    setUnlocked(false)
+
+  async function logout() {
+    if (supabase) await supabase.auth.signOut()
+    setOrders([])
     setPw('')
   }
 
@@ -497,6 +515,18 @@ export default function SnailOrderForm() {
     }
   }
 
+  // กำลังเช็กว่าล็อกอินค้างไว้ไหม
+  if (!authChecked) {
+    return (
+      <div className="lock-wrap">
+        <div className="lock-card">
+          <div className="lock-snail">🐌</div>
+          <p>กำลังโหลด...</p>
+        </div>
+      </div>
+    )
+  }
+
   if (!unlocked) {
     return (
       <div className="lock-wrap">
@@ -505,15 +535,25 @@ export default function SnailOrderForm() {
           <h1>SnailShop</h1>
           <p>สำหรับพนักงานเท่านั้น</p>
           <input
+            type="email"
+            value={email}
+            onChange={(e) => { setEmail(e.target.value); setLockErr(false) }}
+            placeholder="อีเมลพนักงาน"
+            autoComplete="username"
+            autoFocus
+          />
+          <input
             type="password"
             value={pw}
             onChange={(e) => { setPw(e.target.value); setLockErr(false) }}
             onKeyDown={(e) => { if (e.key === 'Enter') tryUnlock() }}
-            placeholder="ใส่รหัสผ่าน"
-            autoFocus
+            placeholder="รหัสผ่าน"
+            autoComplete="current-password"
           />
-          {lockErr && <div className="lock-err">รหัสไม่ถูกต้อง ลองใหม่นะคะ</div>}
-          <button className="btn btn-primary" onClick={tryUnlock}>เข้าใช้งาน</button>
+          {lockErr && <div className="lock-err">อีเมลหรือรหัสผ่านไม่ถูกต้อง ลองใหม่นะคะ</div>}
+          <button className="btn btn-primary" onClick={tryUnlock} disabled={loggingIn}>
+            {loggingIn ? 'กำลังเข้าสู่ระบบ...' : 'เข้าใช้งาน'}
+          </button>
         </div>
       </div>
     )
