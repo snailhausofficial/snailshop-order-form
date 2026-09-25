@@ -15,8 +15,8 @@ export default function OrderStatus() {
       return
     }
     ;(async () => {
-      const { data, error } = await supabase.from(TABLE).select('*').eq('code', code).limit(1)
-      setOrder(error || !data || data.length === 0 ? null : data[0])
+    const { data, error } = await supabase.rpc('get_order_by_code', { p_code: code })
+setOrder(error || !data?.length ? null : data[0])
     })()
   }, [code])
 
