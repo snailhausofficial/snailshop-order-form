@@ -17,6 +17,8 @@ export const STATUSES = ['สรุปแล้ว', 'ฝาก', 'แพ็ค'
 export function genOrderCode(d = new Date()) {
   const p = (n) => String(n).padStart(2, '0')
   const ymd = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`
-  const rand = String(Math.floor(1000 + Math.random() * 9000))
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+  const bytes = crypto.getRandomValues(new Uint8Array(8))
+  const rand = Array.from(bytes, (b) => chars[b % chars.length]).join('')
   return `${ymd}-${rand}`
 }
