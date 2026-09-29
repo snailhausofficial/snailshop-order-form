@@ -5,6 +5,14 @@ import { supabase, TABLE, STATUSES } from './supabase'
 // LINE OA ของร้าน (ลูกค้ากดสอบถาม)
 const SHOP_LINE = 'https://line.me/R/ti/p/@snailshop'
 
+// บอกว่าเลขพัสดุเป็นของขนส่งเจ้าไหน (ดูจากรูปแบบเลข)
+function carrierOf(tk) {
+  const t = (tk || '').replace(/\s/g, '').toUpperCase()
+  if (/^(JD|E[A-Z])\d{9}TH$/.test(t)) return 'ไปรษณีย์ไทย (EMS)'
+  if (/^[A-Z]{2}\d{9}TH$/.test(t)) return 'ไปรษณีย์ไทย'
+  if (/^TH[0-9A-Z]{8,}$/.test(t)) return 'Flash'
+  return ''
+}
 export default function OrderStatus() {
   const { code } = useParams()
   const [order, setOrder] = useState(undefined) // undefined = กำลังโหลด, null = ไม่พบ
@@ -84,7 +92,7 @@ setOrder(error || !data?.length ? null : data[0])
           </div>
           {order.send_date && <div className="ord-line">📅 กำหนดส่ง: <b>{order.send_date}</b></div>}
           {order.tracking && (
-            <div className="ord-line">📦 เลขพัสดุ Flash: <b>{order.tracking}</b></div>
+           <div className="ord-line">📦 เลขพัสดุ{carrierOf(order.tracking) ? ` ${carrierOf(order.tracking)}` : ''}: <b>{order.tracking}</b></div>
           )}
         </div>
 
