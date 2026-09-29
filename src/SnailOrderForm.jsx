@@ -110,6 +110,14 @@ export function splitOrders(raw) {
 }
 /* ========================================================= */
 
+// บอกว่าเลขพัสดุเป็นของขนส่งเจ้าไหน (ดูจากรูปแบบเลข)
+export function carrierOf(tk) {
+  const t = (tk || '').trim().toUpperCase()
+  if (/^[A-Z]{2}\d{9}TH$/.test(t)) return 'ไปรษณีย์ไทย'
+  if (/^TH[0-9A-Z]{8,}$/.test(t)) return 'Flash'
+  return ''
+}
+
 const BLANK = { tiktok: '', qty: 1, type: '', date: '', name: '', phone: '', addr: '', note: '' }
 
 // โดเมนหลักของเว็บ (ลิงก์ที่ส่งให้ลูกค้าจะใช้ตัวนี้เสมอ) — เปลี่ยนได้ที่นี่ หรือตั้ง env VITE_SITE_URL
@@ -135,6 +143,12 @@ export default function SnailOrderForm() {
   const [lockErr, setLockErr] = useState(false)
   const [loggingIn, setLoggingIn] = useState(false)
   const [linkModal, setLinkModal] = useState(null)
+  // ===== เปลี่ยนรหัสผ่าน =====
+  const [pwModal, setPwModal] = useState(false)
+  const [newPw, setNewPw] = useState('')
+  const [newPw2, setNewPw2] = useState('')
+  const [pwMsg, setPwMsg] = useState({ msg: '', ok: true })
+  const [pwSaving, setPwSaving] = useState(false)
 
   // เปิดหน้ามา → เช็กว่าเคยล็อกอินค้างไว้ไหม + คอยฟังการล็อกอิน/ล็อกเอาต์
   useEffect(() => {
@@ -174,6 +188,34 @@ export default function SnailOrderForm() {
     if (supabase) await supabase.auth.signOut()
     setOrders([])
     setPw('')
+  }
+
+  function openPwModal() {
+    setNewPw('')
+    setNewPw2('')
+    setPwMsg({ msg: '', ok: true })
+    setPwModal(true)
+  }
+
+  async function changePassword() {
+    if (newPw.length < 8) {
+      setPwMsg({ msg: 'รหัสผ่านต้องยาวอย่างน้อย 8 ตัว', ok: false })
+      return
+    }
+    if (newPw !== newPw2) {
+      setPwMsg({ msg: 'รหัสผ่านสองช่องไม่ตรงกัน', ok: false })
+      return
+    }
+    setPwSaving(true)
+    const { error } = await supabase.auth.updateUser({ password: newPw })
+    setPwSaving(false)
+    if (error) {
+      setPwMsg({ msg: 'เปลี่ยนไม่สำเร็จ: ' + error.message, ok: false })
+      return
+    }
+    setNewPw('')
+    setNewPw2('')
+    setPwMsg({ msg: '✅ เปลี่ยนรหัสผ่านแล้ว ครั้งหน้าใช้รหัสใหม่ล็อกอินนะคะ', ok: true })
   }
 
   const online = !!supabase
@@ -379,6 +421,7 @@ export default function SnailOrderForm() {
   }
   const normName = (s) =>
     (s || '')
+      .replace(/@/g, '')
       .replace(/นางสาว|น\.ส\.?|นส\.?|นาง|นาย|คุณ|ร้าน/g, '')
       .replace(/[\u0E48-\u0E4E\u0E31\u0E47]/g, '') // วรรณยุกต์/ไม้ไต่คู้/นิคหิต
       .replace(/ฎ/g, 'ฏ')
@@ -393,12 +436,57 @@ export default function SnailOrderForm() {
     return false
   }
 
-  // จับคู่เลขพัสดุ Flash (เบอร์ 9 หลักท้าย → ชื่อยืดหยุ่น) + เก็บรายการจับไม่ได้ไว้จับมือ
+  // ===== จับคู่เลขพัสดุ 2 เจ้า =====
+  // ไปรษณีย์ไทย: 2 ตัวอักษร + 9 หลัก + TH (เช่น OB387781306TH, EX..TH, RC..TH) → ลิสต์มักไม่มีเบอร์ → เล็งชื่อ TikTok ก่อน
+  // Flash: TH + ตัวอักษร/เลข (เช่น TH27229622KU7F) → ไฟล์มีเบอร์ → เล็งเบอร์ก่อน
+  const THPOST_RE = /\b[A-Z]{2}\d{9}TH\b/i
+  const FLASH_RE = /\bTH[0-9A-Z]{8,}\b/i
+
+  function readTrackingLine(line) {
+    let tk = (line.match(THPOST_RE) || [])[0]
+    let carrier = 'thpost'
+    if (!tk) {
+      tk = (line.match(FLASH_RE) || [])[0]
+      carrier = 'flash'
+    }
+    if (!tk) return null
+    const tokens = line.replace(tk, ' ').split(/\s+/).filter(Boolean)
+    const phoneIdx = tokens.findIndex((t) => {
+      const d = digitsOf(t)
+      return d.length >= 9 && d.length <= 10
+    })
+    const phone = phoneIdx >= 0 ? last9(tokens[phoneIdx]) : ''
+    let nameTokens = phoneIdx > 0 ? tokens.slice(0, phoneIdx) : phoneIdx === 0 ? tokens.slice(1) : tokens
+    nameTokens = nameTokens.filter((t, i) => !(i === 0 && /^\d{1,3}$/.test(t))) // ตัดเลขลำดับหน้าสุด
+    const rawName = nameTokens.join(' ')
+    return { tk: tk.toUpperCase(), carrier, phone, rawName, nn: normName(rawName) }
+  }
+
+  // หาออเดอร์ที่ตรง: เฉพาะรอบส่งที่เลือกเท่านั้น (ไม่จับข้ามรอบ) + ข้ามคนที่มีเลขพัสดุอื่นอยู่แล้ว
+  function findOrderFor(list, used, row, round) {
+    const eligible = (o, i) =>
+      !used.has(i) && (o.date || '') === round && (!o.tracking || o.tracking === row.tk)
+    const byPhone = (o) => !!row.phone && last9(o.phone) === row.phone
+    const byTiktok = (o) => !!row.nn && nameHit(normName(o.tiktok), row.nn)
+    const byName = (o) => !!row.nn && nameHit(normName(o.name), row.nn)
+    const tests = row.carrier === 'thpost' ? [byTiktok, byName, byPhone] : [byPhone, byName, byTiktok]
+    for (const test of tests) {
+      const i = list.findIndex((o, k) => eligible(o, k) && test(o))
+      if (i >= 0) return i
+    }
+    return -1
+  }
+
   async function importTracking() {
     if (!trackText.trim()) {
-      setFlash({ msg: 'วางข้อมูลจากไฟล์ Flash ก่อนนะคะ', ok: false })
+      setFlash({ msg: 'วางลิสต์เลขพัสดุ (Flash หรือไปรษณีย์ไทย) ก่อนนะคะ', ok: false })
       return
     }
+    if (!filterDate) {
+      setFlash({ msg: 'เลือกรอบส่งก่อนนะคะ — ระบบจะจับคู่เฉพาะในรอบนั้น ไม่จับข้ามรอบ', ok: false })
+      return
+    }
+    const round = filterDate
     const lines = trackText.split('\n').map((l) => l.trim()).filter(Boolean)
     const next = orders.map((o) => ({ ...o }))
     const used = new Set()
@@ -406,28 +494,15 @@ export default function SnailOrderForm() {
     let matched = 0
     const missedRows = []
     lines.forEach((line) => {
-      const tk = (line.match(/TH[0-9A-Z]{8,}/i) || [])[0]
-      if (!tk) return
-      const rest = line.replace(tk, ' ')
-      const tokens = rest.split(/\s+/).filter(Boolean)
-      const phoneIdx = tokens.findIndex((t) => {
-        const d = digitsOf(t)
-        return d.length >= 9 && d.length <= 10
-      })
-      const flashPhone = phoneIdx >= 0 ? last9(tokens[phoneIdx]) : ''
-      let nameTokens = phoneIdx > 0 ? tokens.slice(0, phoneIdx) : tokens
-      nameTokens = nameTokens.filter((t, i) => !(i === 0 && /^\d{1,3}$/.test(t)))
-      const rawName = nameTokens.join(' ')
-      const nn = normName(rawName)
-      let idx = -1
-      if (flashPhone) idx = next.findIndex((o, i) => !used.has(i) && last9(o.phone) === flashPhone)
-      if (idx < 0 && nn) idx = next.findIndex((o, i) => !used.has(i) && nameHit(normName(o.name), nn))
+      const row = readTrackingLine(line)
+      if (!row) return
+      const idx = findOrderFor(next, used, row, round)
       if (idx < 0) {
-        missedRows.push({ tk, name: rawName })
+        missedRows.push({ tk: row.tk, name: row.rawName, round })
         return
       }
       used.add(idx)
-      next[idx].tracking = tk
+      next[idx].tracking = row.tk
       next[idx].status = 'ส่งแล้ว'
       changed.push(next[idx])
       matched++
@@ -439,8 +514,11 @@ export default function SnailOrderForm() {
       }
     }
     setUnmatched(missedRows)
+    const nPost = changed.filter((o) => carrierOf(o.tracking) === 'ไปรษณีย์ไทย').length
+    const nFlash = changed.filter((o) => carrierOf(o.tracking) === 'Flash').length
+    const byCarrier = [nPost ? `ไปรษณีย์ไทย ${nPost}` : '', nFlash ? `Flash ${nFlash}` : ''].filter(Boolean).join(' · ')
     setFlash({
-      msg: `📦 จับคู่ได้ ${matched} รายการ${missedRows.length ? ` · จับไม่ได้ ${missedRows.length} (เลือกเจ้าของด้านล่าง)` : ''}`,
+      msg: `📦 รอบ ${round}: จับคู่ได้ ${matched} รายการ${byCarrier ? ` (${byCarrier})` : ''}${missedRows.length ? ` · จับไม่ได้ ${missedRows.length} (เลือกเจ้าของด้านล่าง)` : ''}`,
       ok: matched > 0,
     })
     if (matched > 0) setTrackText('')
@@ -570,6 +648,9 @@ export default function SnailOrderForm() {
         <span className={'conn ' + (online ? 'on' : 'off')}>
           {online ? '● บันทึกลงฐานข้อมูล' : '○ โหมดทดลอง (ยังไม่ต่อฐานข้อมูล)'}
         </span>
+        {online && (
+          <button className="logout-btn no-print" onClick={openPwModal} title="เปลี่ยนรหัสผ่าน">🔑 เปลี่ยนรหัส</button>
+        )}
         <button className="logout-btn no-print" onClick={logout} title="ออกจากระบบ">ออก</button>
       </header>
 
@@ -635,33 +716,38 @@ export default function SnailOrderForm() {
           {showTrack && (
             <div className="copy-box no-print">
               <div className="copy-head">
-                <span>วางข้อมูลจากไฟล์ Flash (ก๊อปคอลัมน์ เลขพัสดุ + เบอร์ มาวางได้เลย)</span>
+                <span>วางลิสต์เลขพัสดุ — Flash (เลข + ชื่อ + เบอร์) หรือ ไปรษณีย์ไทย (ชื่อ TikTok + เลข)</span>
                 <button className="mini-x" onClick={() => setShowTrack(false)}>✕ ปิด</button>
               </div>
               <textarea
                 value={trackText}
                 onChange={(e) => setTrackText(e.target.value)}
-                placeholder={'ตัวอย่าง (ก๊อปจาก Excel ทั้งแถวได้):\nTH010395VG1X0C\tคุณวิลาวัลย์\t0853288992\nTH013195VFTF9A0\tคุณอภิญญา\t0930069077'}
+                placeholder={'ตัวอย่าง Flash (ก๊อปจาก Excel ทั้งแถวได้):\nTH010395VG1X0C\tคุณวิลาวัลย์\t0853288992\n\nตัวอย่าง ไปรษณีย์ไทย:\nฟ้า OB387781306TH'}
               />
-              <button className="btn btn-primary" style={{ marginTop: 10 }} onClick={importTracking}>🔗 จับคู่เลขพัสดุ (ด้วยเบอร์โทร)</button>
+              <button className="btn btn-primary" style={{ marginTop: 10 }} onClick={importTracking}>🔗 จับคู่เลขพัสดุ</button>
             </div>
           )}
 
           {unmatched.length > 0 && (
             <div className="copy-box no-print" style={{ borderColor: 'var(--pink-deep)' }}>
               <div className="copy-head">
-                <span>📦 จับไม่ได้ {unmatched.length} — เลือกเจ้าของเอง</span>
+                <span>📦 จับไม่ได้ {unmatched.length} (รอบ {unmatched[0].round}) — เลือกเจ้าของเอง</span>
                 <button className="mini-x" onClick={() => setUnmatched([])}>✕ ปิด</button>
               </div>
               {unmatched.map((u) => (
                 <div key={u.tk} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
                   <span style={{ fontSize: 12, fontFamily: 'monospace', fontWeight: 700 }}>{u.tk}</span>
+                  {carrierOf(u.tk) && <span style={{ fontSize: 11, color: 'var(--pink-deep)' }}>🚚 {carrierOf(u.tk)}</span>}
                   {u.name && <span style={{ fontSize: 12, color: 'var(--muted)' }}>({u.name})</span>}
                   <select className="status-select" defaultValue="" onChange={(e) => { if (e.target.value) manualMatch(e.target.value, u.tk) }}>
                     <option value="">— เลือกออเดอร์ —</option>
-                    {orders.filter((o) => !o.tracking).map((o) => (
-                      <option key={o.id} value={o.id}>{(o.tiktok || o.name || '?') + ' · ' + (o.phone || 'ไม่มีเบอร์')}</option>
-                    ))}
+                    {orders
+                      .filter((o) => (o.date || '') === u.round && !o.tracking)
+                      .map((o) => (
+                        <option key={o.id} value={o.id}>
+                          {[o.tiktok || '-', o.name || '-', o.phone || 'ไม่มีเบอร์'].join(' · ')}
+                        </option>
+                      ))}
                   </select>
                 </div>
               ))}
@@ -704,6 +790,9 @@ export default function SnailOrderForm() {
                           value={o.tracking || ''} placeholder="📦 เลขพัสดุ (วางเองได้)"
                           onChange={(e) => updateField(o.id, 'tracking', e.target.value)}
                           onFocus={(e) => cellFocus(o.id, 'tracking', e.target.value)} onBlur={(e) => cellBlur(o.id, 'tracking', e.target.value)} />
+                        {carrierOf(o.tracking) && (
+                          <div style={{ fontSize: 10, color: '#0a7a3f', fontWeight: 700, paddingLeft: 4 }}>🚚 {carrierOf(o.tracking)}</div>
+                        )}
                       </td>
                       <td>
                         <input className="cell-input cell-qty" type="number" min="1" value={o.qty}
@@ -775,7 +864,7 @@ export default function SnailOrderForm() {
             <div className="lbl-acc">แอคเค้าตต: {o.tiktok || '-'}</div>
             <div className="lbl-row"><b>{o.name || '-'}</b> · {o.phone || '-'}</div>
             <div className="lbl-row">จำนวน {o.qty} ชุด{o.note && o.note !== '-' ? ` · ${o.note}` : ''}</div>
-            {o.tracking && <div className="lbl-row">พัสดุ: {o.tracking}</div>}
+            {o.tracking && <div className="lbl-row">พัสดุ{carrierOf(o.tracking) ? ` (${carrierOf(o.tracking)})` : ''}: {o.tracking}</div>}
           </div>
         ))}
       </div>
@@ -815,6 +904,45 @@ export default function SnailOrderForm() {
               </a>
             </div>
             <p className="mini-clear" style={{ marginTop: 12 }} onClick={() => setLinkModal(null)}>ปิด</p>
+          </div>
+        </div>
+      )}
+      {/* ===== POPUP เปลี่ยนรหัสผ่าน ===== */}
+      {pwModal && (
+        <div
+          onClick={() => setPwModal(false)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(60,20,40,.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50, padding: 16 }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{ background: '#fff', borderRadius: 18, padding: 24, width: '100%', maxWidth: 400, boxShadow: '0 20px 50px rgba(0,0,0,.25)', fontFamily: "'Sarabun',sans-serif" }}
+          >
+            <div style={{ fontFamily: "'Mitr',sans-serif", fontSize: 18, color: 'var(--pink-deep)', marginBottom: 14 }}>🔑 เปลี่ยนรหัสผ่าน</div>
+            <input
+              type="password"
+              value={newPw}
+              onChange={(e) => { setNewPw(e.target.value); setPwMsg({ msg: '', ok: true }) }}
+              placeholder="รหัสผ่านใหม่ (อย่างน้อย 8 ตัว)"
+              autoComplete="new-password"
+              autoFocus
+              style={{ marginBottom: 10 }}
+            />
+            <input
+              type="password"
+              value={newPw2}
+              onChange={(e) => { setNewPw2(e.target.value); setPwMsg({ msg: '', ok: true }) }}
+              onKeyDown={(e) => { if (e.key === 'Enter') changePassword() }}
+              placeholder="พิมพ์รหัสผ่านใหม่อีกครั้ง"
+              autoComplete="new-password"
+              style={{ marginBottom: 10 }}
+            />
+            {pwMsg.msg && (
+              <p style={{ fontSize: 13, marginBottom: 10, color: pwMsg.ok ? 'var(--ok)' : 'var(--pink-deep)' }}>{pwMsg.msg}</p>
+            )}
+            <button className="btn btn-primary" style={{ width: '100%' }} onClick={changePassword} disabled={pwSaving}>
+              {pwSaving ? 'กำลังบันทึก...' : 'บันทึกรหัสใหม่'}
+            </button>
+            <p className="mini-clear" style={{ marginTop: 12 }} onClick={() => setPwModal(false)}>ปิด</p>
           </div>
         </div>
       )}
