@@ -5,6 +5,9 @@ import { supabase, TABLE, STATUSES } from './supabase'
 // LINE OA ของร้าน (ลูกค้ากดสอบถาม)
 const SHOP_LINE = 'https://line.me/R/ti/p/@snailshop'
 
+// โลโก้ร้าน (ไฟล์อยู่ที่ public/logo.png)
+const LOGO = '/logo.png'
+
 // บอกว่าเลขพัสดุเป็นของขนส่งเจ้าไหน (ดูจากรูปแบบเลข)
 function carrierOf(tk) {
   const t = (tk || '').replace(/\s/g, '').toUpperCase()
@@ -13,6 +16,7 @@ function carrierOf(tk) {
   if (/^TH[0-9A-Z]{8,}$/.test(t)) return 'Flash'
   return ''
 }
+
 export default function OrderStatus() {
   const { code } = useParams()
   const [order, setOrder] = useState(undefined) // undefined = กำลังโหลด, null = ไม่พบ
@@ -23,15 +27,18 @@ export default function OrderStatus() {
       return
     }
     ;(async () => {
-    const { data, error } = await supabase.rpc('get_order_by_code', { p_code: code })
-setOrder(error || !data?.length ? null : data[0])
+      const { data, error } = await supabase.rpc('get_order_by_code', { p_code: code })
+      setOrder(error || !data?.length ? null : data[0])
     })()
   }, [code])
 
   if (order === undefined) {
     return (
       <div className="ord-wrap">
-        <div className="ord-loading">🐌 กำลังโหลด...</div>
+        <div className="ord-loading">
+          <img src={LOGO} alt="Snail Shop" style={{ width: 160, display: 'block', margin: '0 auto 8px' }} />
+          กำลังโหลด...
+        </div>
       </div>
     )
   }
@@ -40,7 +47,7 @@ setOrder(error || !data?.length ? null : data[0])
     return (
       <div className="ord-wrap">
         <div className="ord-card ord-notfound">
-          <div className="ord-snail">🐌</div>
+          <img src={LOGO} alt="Snail Shop" style={{ width: 180, maxWidth: '70%', display: 'block', margin: '0 auto 10px' }} />
           <h2>ไม่พบออเดอร์นี้</h2>
           <p>เลขที่ {code} อาจไม่ถูกต้อง หรือลิงก์หมดอายุ</p>
         </div>
@@ -53,7 +60,7 @@ setOrder(error || !data?.length ? null : data[0])
   return (
     <div className="ord-wrap">
       <div className="ord-top">
-        <span className="ord-brand">🐌 SnailShop</span>
+        <img src={LOGO} alt="Snail Shop" style={{ height: 56, maxWidth: '80%', display: 'block', margin: '0 auto' }} />
         <span className="ord-sub">เล็บปลอม Handmade</span>
       </div>
 
@@ -86,13 +93,13 @@ setOrder(error || !data?.length ? null : data[0])
           <div className="ord-item">
             <div className="item-main">
               <span className="item-name">{order.type || 'เล็บปลอม Handmade'}</span>
-              {order.note && order.note !== '-' && <span className="item-note">แถม: {order.note}</span>}
+              {order.note && order.note !== '-' && <span className="item-note">หมายเหตุ: {order.note}</span>}
             </div>
             <div className="item-qty">{order.qty} ชุด</div>
           </div>
           {order.send_date && <div className="ord-line">📅 กำหนดส่ง: <b>{order.send_date}</b></div>}
           {order.tracking && (
-           <div className="ord-line">📦 เลขพัสดุ{carrierOf(order.tracking) ? ` ${carrierOf(order.tracking)}` : ''}: <b>{order.tracking}</b></div>
+            <div className="ord-line">📦 เลขพัสดุ{carrierOf(order.tracking) ? ` ${carrierOf(order.tracking)}` : ''}: <b>{order.tracking}</b></div>
           )}
         </div>
 
@@ -113,7 +120,7 @@ setOrder(error || !data?.length ? null : data[0])
         </div>
       </div>
 
-      <div className="ord-foot">SnailShop · เล็บปลอม Handmade 🐌</div>
+      <div className="ord-foot">Snail Shop · เล็บปลอม Handmade</div>
     </div>
   )
 }

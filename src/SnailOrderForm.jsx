@@ -110,13 +110,135 @@ export function splitOrders(raw) {
 }
 /* ========================================================= */
 
+// โลโก้ร้าน (ไฟล์อยู่ที่ public/logo.png)
+const LOGO = '/logo.png'
+
+/* ================= จับคู่เลขพัสดุ ================= */
+// ไปรษณีย์ไทย: 2 ตัวอักษร + 9 หลัก + TH — อ่านได้แม้มีเว้นวรรค เช่น "OB 3877 8148 7 TH"
+const THPOST_RE = /\b[A-Z]{2}(?:\s*\d){9}\s*TH\b/i
+// Flash: TH + ตัวอักษร/เลขติดกัน เช่น TH27229622KU7F
+const FLASH_RE = /\bTH[0-9A-Z]{8,}\b/i
+
 // บอกว่าเลขพัสดุเป็นของขนส่งเจ้าไหน (ดูจากรูปแบบเลข)
 export function carrierOf(tk) {
-  const t = (tk || '').trim().toUpperCase()
+  const t = (tk || '').replace(/\s/g, '').toUpperCase()
+  if (/^(JD|E[A-Z])\d{9}TH$/.test(t)) return 'ไปรษณีย์ไทย (EMS)'
   if (/^[A-Z]{2}\d{9}TH$/.test(t)) return 'ไปรษณีย์ไทย'
   if (/^TH[0-9A-Z]{8,}$/.test(t)) return 'Flash'
   return ''
 }
+const isThaiPost = (tk) => carrierOf(tk).startsWith('ไปรษณีย์ไทย')
+
+const digitsOf = (s) => (s || '').replace(/\D/g, '')
+const last9 = (s) => {
+  const d = digitsOf(s)
+  return d.length >= 9 ? d.slice(-9) : d
+}
+
+// ตัวอักษรเสียงเดียวกันให้ถือเป็นตัวเดียวกัน (สะกดต่างนิดหน่อยก็ยังจับได้)
+const SAME_SOUND = { ณ: 'น', ศ: 'ส', ษ: 'ส', ฎ: 'ด', ฏ: 'ต', ฐ: 'ท', ฑ: 'ท', ฒ: 'ท', ธ: 'ท', ภ: 'พ', ฬ: 'ล', ฆ: 'ค', ฌ: 'ช' }
+
+// แตกข้อความเป็น "คำ" — อ่านแค่ตัวอักษร ไม่สนตัวเลข : . และสัญลักษณ์อื่น
+export function wordsOf(text) {
+  return (text || '')
+    .split(/[^\u0E01-\u0E4Ea-zA-Z]+/)
+    .map((w) => w.replace(/^(นางสาว|นาง|นาย|คุณ)(?=.{2,})/, '')) // คำนำหน้าชื่อ
+    .map((w) =>
+      w
+        .toLowerCase()
+        .replace(/[\u0E31\u0E47-\u0E4E]/g, '') // ไม้หันอากาศ วรรณยุกต์ การันต์
+        .replace(/[ณศษฎฏฐฑฒธภฬฆฌ]/g, (c) => SAME_SOUND[c])
+    )
+    .filter((w) => w.length >= 2)
+}
+
+// ต่างกันไม่เกิน 1 ตัวอักษร (เพิ่ม/ลบ/เปลี่ยน 1 ตัว)
+function within1(a, b) {
+  if (Math.abs(a.length - b.length) > 1) return false
+  let i = 0
+  let j = 0
+  let diff = 0
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) {
+      i++
+      j++
+      continue
+    }
+    if (++diff > 1) return false
+    if (a.length > b.length) i++
+    else if (a.length < b.length) j++
+    else {
+      i++
+      j++
+    }
+  }
+  return diff + (a.length - i) + (b.length - j) <= 1
+}
+
+function wordScore(a, b) {
+  if (a === b) return 3 // ตรงเป๊ะ
+  if (a.length >= 3 && b.length >= 3 && (a.includes(b) || b.includes(a))) return 2 // อยู่ในกัน เช่น ชื่อเล่นติดชื่อจริง
+  if (a.length >= 4 && b.length >= 4 && within1(a, b)) return 1.5 // สะกดต่าง 1 ตัว
+  return 0
+}
+
+// คะแนนความใกล้ระหว่าง "คำในบรรทัด" กับ ชื่อจริง + ชื่อ TikTok ของออเดอร์
+export function nameScore(lineWords, o) {
+  const target = [...wordsOf(o.name), ...wordsOf(o.tiktok)]
+  let total = 0
+  for (const a of lineWords) {
+    let best = 0
+    for (const b of target) best = Math.max(best, wordScore(a, b))
+    total += best
+  }
+  return total
+}
+const MIN_SCORE = 1.5
+
+// อ่าน 1 บรรทัด → เลขพัสดุ + เบอร์ (ถ้ามี) + คำที่น่าจะเป็นชื่อ
+export function readTrackingLine(line) {
+  let m = line.match(THPOST_RE) || line.match(FLASH_RE)
+  if (!m) return null
+  const tk = m[0].replace(/\s/g, '').toUpperCase()
+  const rest = line.replace(m[0], ' ')
+  // เบอร์โทร (มีในไฟล์ Flash) — ชื่ออยู่ก่อนเบอร์, หลังเบอร์มักเป็นที่อยู่ ไม่เอามาเทียบ
+  const pm = rest.match(/(?<!\d)0?\d(?:[\s.\-]?\d){8}(?!\d)/)
+  const phone = pm && digitsOf(pm[0]).length >= 9 ? last9(pm[0]) : ''
+  const nameText = pm ? rest.slice(0, pm.index) : rest
+  const words = wordsOf(nameText)
+  return { tk, phone, words, label: nameText.replace(/[^\u0E01-\u0E4Ea-zA-Z\s]+/g, ' ').replace(/\s+/g, ' ').trim() }
+}
+
+// จับคู่ทั้งลิสต์ในรอบเดียว: คู่ที่คะแนนสูงสุดได้ก่อน, คะแนนเท่ากัน 2 คน = ไม่เดา
+export function matchTracking(rows, orders, round) {
+  const pool = orders
+    .map((o, i) => ({ o, i }))
+    .filter(({ o }) => (o.date || '') === round)
+  const pairs = []
+  const ambiguous = new Set()
+  rows.forEach((row, r) => {
+    const cands = pool
+      .filter(({ o }) => !o.tracking || o.tracking === row.tk)
+      .map(({ o, i }) => {
+        const phoneHit = row.phone && last9(o.phone) === row.phone
+        return { r, i, score: (phoneHit ? 10 : 0) + nameScore(row.words, o) }
+      })
+      .filter((c) => c.score >= MIN_SCORE)
+      .sort((x, y) => y.score - x.score)
+    if (cands.length >= 2 && cands[0].score === cands[1].score) ambiguous.add(r)
+    pairs.push(...cands)
+  })
+  pairs.sort((x, y) => y.score - x.score)
+  const rowTo = new Map()
+  const usedOrder = new Set()
+  for (const p of pairs) {
+    if (ambiguous.has(p.r) || rowTo.has(p.r) || usedOrder.has(p.i)) continue
+    rowTo.set(p.r, p.i)
+    usedOrder.add(p.i)
+  }
+  return rowTo // Map: ลำดับบรรทัด → ลำดับออเดอร์
+}
+/* ========================================================= */
 
 const BLANK = { tiktok: '', qty: 1, type: '', date: '', name: '', phone: '', addr: '', note: '' }
 
@@ -149,6 +271,11 @@ export default function SnailOrderForm() {
   const [newPw2, setNewPw2] = useState('')
   const [pwMsg, setPwMsg] = useState({ msg: '', ok: true })
   const [pwSaving, setPwSaving] = useState(false)
+
+  // ชื่อแท็บของหน้าพนักงาน (หน้าลูกค้าใช้ชื่อจาก index.html)
+  useEffect(() => {
+    document.title = 'SnailShop — หลังร้าน'
+  }, [])
 
   // เปิดหน้ามา → เช็กว่าเคยล็อกอินค้างไว้ไหม + คอยฟังการล็อกอิน/ล็อกเอาต์
   useEffect(() => {
@@ -321,6 +448,21 @@ export default function SnailOrderForm() {
     }
   }
 
+  // ปุ่ม "วาง": เอาข้อความที่คัดลอกไว้มาใส่ช่อง (แทนของเดิม)
+  async function pasteInto(setter) {
+    try {
+      const t = await navigator.clipboard.readText()
+      if (!t || !t.trim()) {
+        setFlash({ msg: 'คลิปบอร์ดว่างอยู่ค่ะ — คัดลอกข้อความมาก่อนนะคะ', ok: false })
+        return
+      }
+      setter(t)
+      setFlash({ msg: '', ok: true })
+    } catch {
+      setFlash({ msg: 'เครื่องนี้ไม่ให้กดวางอัตโนมัติ — กดค้างในช่องแล้วเลือก "วาง" แทนนะคะ', ok: false })
+    }
+  }
+
   // เพิ่มแถวว่างไว้พิมพ์เองในตาราง
   async function addEmptyRow() {
     const blank = { tiktok: '', qty: 1, type: '', date: filterDate || '', name: '', phone: '', addr: '', note: '-' }
@@ -413,70 +555,6 @@ export default function SnailOrderForm() {
     setOrders((prev) => prev.filter((o) => !ids.includes(o.id)))
   }
 
-  // ตัดคำนำหน้า + วรรณยุกต์เพี้ยน + ตัวคล้าย เพื่อเทียบชื่อแบบยืดหยุ่น
-  const digitsOf = (s) => (s || '').replace(/\D/g, '')
-  const last9 = (s) => {
-    const d = digitsOf(s)
-    return d.length >= 9 ? d.slice(-9) : d
-  }
-  const normName = (s) =>
-    (s || '')
-      .replace(/@/g, '')
-      .replace(/นางสาว|น\.ส\.?|นส\.?|นาง|นาย|คุณ|ร้าน/g, '')
-      .replace(/[\u0E48-\u0E4E\u0E31\u0E47]/g, '') // วรรณยุกต์/ไม้ไต่คู้/นิคหิต
-      .replace(/ฎ/g, 'ฏ')
-      .replace(/\([^)]*\)/g, '')
-      .replace(/\s+/g, '')
-      .trim()
-  // เทียบชื่อ: สั้น (<4) ต้องตรงเป๊ะ กันจับมั่ว, ยาวใช้ contains ได้
-  const nameHit = (a, b) => {
-    if (!a || !b) return false
-    if (a === b) return true
-    if (a.length >= 4 && b.length >= 4) return a.includes(b) || b.includes(a)
-    return false
-  }
-
-  // ===== จับคู่เลขพัสดุ 2 เจ้า =====
-  // ไปรษณีย์ไทย: 2 ตัวอักษร + 9 หลัก + TH (เช่น OB387781306TH, EX..TH, RC..TH) → ลิสต์มักไม่มีเบอร์ → เล็งชื่อ TikTok ก่อน
-  // Flash: TH + ตัวอักษร/เลข (เช่น TH27229622KU7F) → ไฟล์มีเบอร์ → เล็งเบอร์ก่อน
-  const THPOST_RE = /\b[A-Z]{2}\d{9}TH\b/i
-  const FLASH_RE = /\bTH[0-9A-Z]{8,}\b/i
-
-  function readTrackingLine(line) {
-    let tk = (line.match(THPOST_RE) || [])[0]
-    let carrier = 'thpost'
-    if (!tk) {
-      tk = (line.match(FLASH_RE) || [])[0]
-      carrier = 'flash'
-    }
-    if (!tk) return null
-    const tokens = line.replace(tk, ' ').split(/\s+/).filter(Boolean)
-    const phoneIdx = tokens.findIndex((t) => {
-      const d = digitsOf(t)
-      return d.length >= 9 && d.length <= 10
-    })
-    const phone = phoneIdx >= 0 ? last9(tokens[phoneIdx]) : ''
-    let nameTokens = phoneIdx > 0 ? tokens.slice(0, phoneIdx) : phoneIdx === 0 ? tokens.slice(1) : tokens
-    nameTokens = nameTokens.filter((t, i) => !(i === 0 && /^\d{1,3}$/.test(t))) // ตัดเลขลำดับหน้าสุด
-    const rawName = nameTokens.join(' ')
-    return { tk: tk.toUpperCase(), carrier, phone, rawName, nn: normName(rawName) }
-  }
-
-  // หาออเดอร์ที่ตรง: เฉพาะรอบส่งที่เลือกเท่านั้น (ไม่จับข้ามรอบ) + ข้ามคนที่มีเลขพัสดุอื่นอยู่แล้ว
-  function findOrderFor(list, used, row, round) {
-    const eligible = (o, i) =>
-      !used.has(i) && (o.date || '') === round && (!o.tracking || o.tracking === row.tk)
-    const byPhone = (o) => !!row.phone && last9(o.phone) === row.phone
-    const byTiktok = (o) => !!row.nn && nameHit(normName(o.tiktok), row.nn)
-    const byName = (o) => !!row.nn && nameHit(normName(o.name), row.nn)
-    const tests = row.carrier === 'thpost' ? [byTiktok, byName, byPhone] : [byPhone, byName, byTiktok]
-    for (const test of tests) {
-      const i = list.findIndex((o, k) => eligible(o, k) && test(o))
-      if (i >= 0) return i
-    }
-    return -1
-  }
-
   async function importTracking() {
     if (!trackText.trim()) {
       setFlash({ msg: 'วางลิสต์เลขพัสดุ (Flash หรือไปรษณีย์ไทย) ก่อนนะคะ', ok: false })
@@ -487,26 +565,26 @@ export default function SnailOrderForm() {
       return
     }
     const round = filterDate
-    const lines = trackText.split('\n').map((l) => l.trim()).filter(Boolean)
+    const rows = trackText.split('\n').map((l) => readTrackingLine(l.trim())).filter(Boolean)
+    if (rows.length === 0) {
+      setFlash({ msg: 'ไม่เจอเลขพัสดุในข้อความเลยค่ะ ลองเช็กอีกที', ok: false })
+      return
+    }
     const next = orders.map((o) => ({ ...o }))
-    const used = new Set()
+    const rowTo = matchTracking(rows, next, round)
     const changed = []
-    let matched = 0
     const missedRows = []
-    lines.forEach((line) => {
-      const row = readTrackingLine(line)
-      if (!row) return
-      const idx = findOrderFor(next, used, row, round)
-      if (idx < 0) {
-        missedRows.push({ tk: row.tk, name: row.rawName, round })
+    rows.forEach((row, r) => {
+      if (!rowTo.has(r)) {
+        missedRows.push({ tk: row.tk, name: row.label, words: row.words, phone: row.phone, round })
         return
       }
-      used.add(idx)
-      next[idx].tracking = row.tk
-      next[idx].status = 'ส่งแล้ว'
-      changed.push(next[idx])
-      matched++
+      const o = next[rowTo.get(r)]
+      o.tracking = row.tk
+      o.status = 'ส่งแล้ว'
+      changed.push(o)
     })
+    const matched = changed.length
     setOrders(next)
     if (online) {
       for (const o of changed) {
@@ -514,7 +592,7 @@ export default function SnailOrderForm() {
       }
     }
     setUnmatched(missedRows)
-    const nPost = changed.filter((o) => carrierOf(o.tracking) === 'ไปรษณีย์ไทย').length
+    const nPost = changed.filter((o) => isThaiPost(o.tracking)).length
     const nFlash = changed.filter((o) => carrierOf(o.tracking) === 'Flash').length
     const byCarrier = [nPost ? `ไปรษณีย์ไทย ${nPost}` : '', nFlash ? `Flash ${nFlash}` : ''].filter(Boolean).join(' · ')
     setFlash({
@@ -598,7 +676,7 @@ export default function SnailOrderForm() {
     return (
       <div className="lock-wrap">
         <div className="lock-card">
-          <div className="lock-snail">🐌</div>
+          <img src={LOGO} alt="Snail Shop" style={{ width: '100%', maxWidth: 200, display: 'block', margin: '0 auto 10px' }} />
           <p>กำลังโหลด...</p>
         </div>
       </div>
@@ -609,8 +687,7 @@ export default function SnailOrderForm() {
     return (
       <div className="lock-wrap">
         <div className="lock-card">
-          <div className="lock-snail">🐌</div>
-          <h1>SnailShop</h1>
+          <img src={LOGO} alt="Snail Shop" style={{ width: '100%', maxWidth: 220, display: 'block', margin: '0 auto 6px' }} />
           <p>สำหรับพนักงานเท่านั้น</p>
           <input
             type="email"
@@ -640,9 +717,8 @@ export default function SnailOrderForm() {
   return (
     <>
       <header>
-        <span className="snail">🐌</span>
+        <img src={LOGO} alt="Snail Shop" style={{ height: 44, background: '#fff', borderRadius: 12, padding: '4px 10px', display: 'block' }} />
         <div>
-          <h1>SnailShop</h1>
           <p>ฟอร์มกรอกออเดอร์ — เล็บปลอม Handmade</p>
         </div>
         <span className={'conn ' + (online ? 'on' : 'off')}>
@@ -661,13 +737,19 @@ export default function SnailOrderForm() {
           <p className="hint">วางข้อความ 2 ช่อง แล้วกดเข้าตารางเลย · แก้ตัวเลข/ข้อมูลในตารางได้ทีหลัง</p>
 
           <div className="paste-wrap">
-            <label>1) ส่วนสรุป (แอค / จำนวน / วันส่ง)</label>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
+              <label style={{ margin: 0 }}>1) ส่วนสรุป (แอค / จำนวน / วันส่ง)</label>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => pasteInto(setPSummary)}>📋 วาง</button>
+            </div>
             <textarea
               value={pSummary}
               onChange={(e) => setPSummary(e.target.value)}
               placeholder={'ขอบคุณมากค่ะ\nแอคเค้าตต : ...\nสถานะ : ... ชุด\nส่งของวันที่ : 16/09'}
             />
-            <label style={{ marginTop: 12 }}>2) ที่อยู่ลูกค้า (ชื่อ / เบอร์ / ที่อยู่)</label>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 12, marginBottom: 6 }}>
+              <label style={{ margin: 0 }}>2) ที่อยู่ลูกค้า (ชื่อ / เบอร์ / ที่อยู่)</label>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => pasteInto(setPAddr)}>📋 วาง</button>
+            </div>
             <textarea
               value={pAddr}
               onChange={(e) => setPAddr(e.target.value)}
@@ -743,9 +825,11 @@ export default function SnailOrderForm() {
                     <option value="">— เลือกออเดอร์ —</option>
                     {orders
                       .filter((o) => (o.date || '') === u.round && !o.tracking)
-                      .map((o) => (
+                      .map((o) => ({ o, s: (u.phone && last9(o.phone) === u.phone ? 10 : 0) + nameScore(u.words || [], o) }))
+                      .sort((x, y) => y.s - x.s)
+                      .map(({ o, s }) => (
                         <option key={o.id} value={o.id}>
-                          {[o.tiktok || '-', o.name || '-', o.phone || 'ไม่มีเบอร์'].join(' · ')}
+                          {(s >= MIN_SCORE ? '⭐ ' : '') + [o.tiktok || '-', o.name || '-', o.phone || 'ไม่มีเบอร์'].join(' · ')}
                         </option>
                       ))}
                   </select>
@@ -766,7 +850,7 @@ export default function SnailOrderForm() {
 
           {visible.length === 0 ? (
             <div className="empty">
-              <div className="big">🐌</div>
+              <img src={LOGO} alt="Snail Shop" style={{ width: 140, maxWidth: '60%', display: 'block', margin: '0 auto 8px', opacity: 0.85 }} />
               ยังไม่มีออเดอร์ในรอบนี้ — กรอกฟอร์มด้านซ้าย หรือเลือกรอบส่งอื่น
             </div>
           ) : (
@@ -858,7 +942,7 @@ export default function SnailOrderForm() {
         {visible.map((o, i) => (
           <div className="label" key={o.id ?? i}>
             <div className="lbl-top">
-              <span className="lbl-brand">🐌 SnailShop</span>
+              <img src={LOGO} alt="Snail Shop" style={{ height: 14, display: 'block' }} />
               <span>{o.date || '-'}</span>
             </div>
             <div className="lbl-acc">แอคเค้าตต: {o.tiktok || '-'}</div>
