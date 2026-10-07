@@ -17,6 +17,15 @@ function carrierOf(tk) {
   return ''
 }
 
+// ลิงก์หน้าเช็กสถานะของขนส่ง (ใส่เลขพัสดุให้แล้ว) — ต้องตรงกับ trackUrlOf ใน SnailOrderForm.jsx
+function trackUrlOf(tk) {
+  const t = (tk || '').replace(/\s/g, '').toUpperCase()
+  const c = carrierOf(t)
+  if (c === 'Flash') return 'https://www.flashexpress.co.th/fle/tracking?se=' + encodeURIComponent(t)
+  if (c.startsWith('ไปรษณีย์ไทย')) return 'https://track.thailandpost.co.th/?trackNumber=' + encodeURIComponent(t)
+  return ''
+}
+
 export default function OrderStatus() {
   const { code } = useParams()
   const [order, setOrder] = useState(undefined) // undefined = กำลังโหลด, null = ไม่พบ
@@ -100,6 +109,17 @@ export default function OrderStatus() {
           {order.send_date && <div className="ord-line">📅 กำหนดส่ง: <b>{order.send_date}</b></div>}
           {order.tracking && (
             <div className="ord-line">📦 เลขพัสดุ{carrierOf(order.tracking) ? ` ${carrierOf(order.tracking)}` : ''}: <b>{order.tracking}</b></div>
+          )}
+          {trackUrlOf(order.tracking) && (
+            <a
+              className="ord-btn no-print"
+              href={trackUrlOf(order.tracking)}
+              target="_blank"
+              rel="noreferrer"
+              style={{ display: 'block', marginTop: 12, background: 'var(--pink)', color: '#fff' }}
+            >
+              🚚 เช็กสถานะพัสดุ ({carrierOf(order.tracking)}) ↗
+            </a>
           )}
         </div>
 
