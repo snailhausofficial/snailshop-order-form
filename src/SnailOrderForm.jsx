@@ -129,6 +129,15 @@ export function carrierOf(tk) {
 }
 const isThaiPost = (tk) => carrierOf(tk).startsWith('ไปรษณีย์ไทย')
 
+// ลิงก์หน้าเช็กสถานะของขนส่ง (ใส่เลขพัสดุให้แล้ว) — ต้องตรงกับ trackUrlOf ใน OrderStatus.jsx
+export function trackUrlOf(tk) {
+  const t = (tk || '').replace(/\s/g, '').toUpperCase()
+  const c = carrierOf(t)
+  if (c === 'Flash') return 'https://www.flashexpress.co.th/fle/tracking?se=' + encodeURIComponent(t)
+  if (c.startsWith('ไปรษณีย์ไทย')) return 'https://track.thailandpost.co.th/?trackNumber=' + encodeURIComponent(t)
+  return ''
+}
+
 const digitsOf = (s) => (s || '').replace(/\D/g, '')
 const last9 = (s) => {
   const d = digitsOf(s)
@@ -875,7 +884,15 @@ export default function SnailOrderForm() {
                           onChange={(e) => updateField(o.id, 'tracking', e.target.value)}
                           onFocus={(e) => cellFocus(o.id, 'tracking', e.target.value)} onBlur={(e) => cellBlur(o.id, 'tracking', e.target.value)} />
                         {carrierOf(o.tracking) && (
-                          <div style={{ fontSize: 10, color: '#0a7a3f', fontWeight: 700, paddingLeft: 4 }}>🚚 {carrierOf(o.tracking)}</div>
+                          <a
+                            href={trackUrlOf(o.tracking)}
+                            target="_blank"
+                            rel="noreferrer"
+                            title="เปิดหน้าเช็กสถานะของขนส่ง"
+                            style={{ display: 'block', fontSize: 10, color: '#0a7a3f', fontWeight: 700, paddingLeft: 4 }}
+                          >
+                            🚚 {carrierOf(o.tracking)} · เช็กสถานะ ↗
+                          </a>
                         )}
                       </td>
                       <td>
