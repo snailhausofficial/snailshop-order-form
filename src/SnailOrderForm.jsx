@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { supabase, TABLE, STATUSES, genOrderCode } from './supabase'
+import NavSwitch from './NavSwitch.jsx'
 
 /* ================= ตัวแยกข้อความอัตโนมัติ ================= */
 const PHONE = /(?<!\d)0(?:[\s.\-]?\d){8,9}/g
@@ -738,6 +739,7 @@ export default function SnailOrderForm() {
         )}
         <button className="logout-btn no-print" onClick={logout} title="ออกจากระบบ">ออก</button>
       </header>
+      {online && <NavSwitch active="orders" />}
 
       <div className="wrap">
         {/* ===== FORM ===== */}

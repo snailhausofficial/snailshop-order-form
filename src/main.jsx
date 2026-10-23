@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import SnailOrderForm from './SnailOrderForm.jsx'
 import OrderStatus from './OrderStatus.jsx'
+import ArtisanJobs from './ArtisanJobs.jsx'
 import './styles.css'
 
 createRoot(document.getElementById('root')).render(
@@ -11,6 +12,7 @@ createRoot(document.getElementById('root')).render(
       <Routes>
         <Route path="/" element={<SnailOrderForm />} />
         <Route path="/ord/:code" element={<OrderStatus />} />
+        <Route path="/jobs" element={<ArtisanJobs />} />
       </Routes>
     </BrowserRouter>
   </StrictMode>
