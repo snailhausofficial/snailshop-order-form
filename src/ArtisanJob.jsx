@@ -156,7 +156,11 @@ export default function ArtisanJob() {
         {/* การจ่ายเงิน */}
         <div className="ord-sec">
           <div className="ord-sec-title">💸 การจ่ายเงิน</div>
-          {j.job_payments.length === 0 && <div className="ord-line jb-muted">ยังไม่มีการโอน</div>}
+          {j.job_payments.length === 0 && (
+            <div className="ord-line jb-muted">
+              {job.pay_term === 'มัดจำก่อน' ? 'ยังไม่มีการโอน — ร้านจะโอนมัดจำให้ก่อนเริ่มงาน' : 'ยังไม่มีการโอน — ร้านจะจ่ายตอนรับของค่ะ'}
+            </div>
+          )}
           {j.job_payments.map((p, k) => (
             <div key={k} className="jb-list-line">
               <span>

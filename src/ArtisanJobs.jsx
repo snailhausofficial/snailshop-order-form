@@ -15,6 +15,8 @@ export const JOB_STATUSES = ['สั่งงาน', 'กำลังทำ', '
 export const SIZES = ['S', 'M', 'L']
 export const JOB_BUCKET = 'job-files'
 const PAY_KINDS = ['มัดจำ', 'ปิดยอด', 'อื่นๆ']
+export const PAY_TERMS = ['จ่ายทีหลัง', 'มัดจำก่อน'] // ตกลงกับช่าง: จ่ายตอนรับของ / ต้องโอนมัดจำก่อนเริ่มงาน
+export const payTermOf = (job) => (job.pay_term === 'มัดจำก่อน' ? 'มัดจำก่อน' : 'จ่ายทีหลัง')
 const LOGO = '/logo.png'
 const SITE_URL = import.meta.env.VITE_SITE_URL || 'https://order.snailshop.org'
 const JOB_SELECT = '*, job_items(*), job_payments(*), job_delays(*), job_files(*)'
@@ -98,9 +100,12 @@ function jobFlags(job, artisan) {
   if (job.tracking) f.push({ t: '🚚 ' + (carrierOf(job.tracking) || 'มีเลขพัสดุแล้ว'), c: 'tl' })
   const nd = (job.job_delays || []).length
   if (nd) f.push({ t: `🔁 เลื่อน ${nd} ครั้ง`, c: 'am' })
+  // สถานะเงิน
   if (si >= 3 && t.balance > 0) f.push({ t: `ค้างจ่าย ${baht(t.balance)} ฿`, c: 'rd' })
-  else if (t.paid > 0 && t.balance > 0) f.push({ t: `จ่ายแล้ว ${baht(t.paid)} ฿`, c: 'gr' })
-  else if (t.amount > 0 && t.balance <= 0) f.push({ t: 'จ่ายครบ', c: 'gr' })
+  else if (t.paid <= 0 && t.amount > 0)
+    f.push(payTermOf(job) === 'มัดจำก่อน' ? { t: '💸 ยังไม่โอนมัดจำ', c: 'rd' } : { t: 'ยังไม่โอน · จ่ายทีหลัง', c: 'gy' })
+  else if (t.balance > 0) f.push({ t: `โอนแล้ว ${baht(t.paid)} ฿`, c: 'gr' })
+  else if (t.amount > 0) f.push({ t: 'จ่ายครบ', c: 'gr' })
   return f
 }
 const Tags = ({ list }) => list.map((x, i) => <span key={i} className={'tag ' + x.c}>{x.t}</span>)
@@ -304,6 +309,7 @@ export default function ArtisanJobs() {
 const FILTERS = [
   ['open', 'ยังไม่จบ'],
   ['late', 'เลยกำหนด'],
+  ['unpaid', 'ยังไม่โอน'],
   ['topay', 'รอจ่าย'],
   ['done', 'จ่ายเงินแล้ว'],
   ['all', 'ทั้งหมด'],
@@ -314,6 +320,7 @@ function JobList({ jobs, artById, artisans, filter, setFilter, q, setQ, onOpen, 
   const test = {
     open: (j) => j.status !== 'จ่ายเงินแล้ว',
     late: (j) => statusIdx(j.status) < 2 && j.due_date && j.due_date < today,
+    unpaid: (j) => j.status !== 'จ่ายเงินแล้ว' && jobTotals(j).paid <= 0,
     topay: (j) => statusIdx(j.status) >= 2 && j.status !== 'จ่ายเงินแล้ว' && jobTotals(j).balance > 0,
     done: (j) => j.status === 'จ่ายเงินแล้ว',
     all: () => true,
@@ -497,6 +504,7 @@ function NewJob({ artisans, say, onCancel, onCreated }) {
   const [brief, setBrief] = useState('')
   const [note, setNote] = useState('')
   const [rows, setRows] = useState([emptyItem('S')])
+  const [payTerm, setPayTerm] = useState('จ่ายทีหลัง')
   const [paste, setPaste] = useState('')
   const [photos, setPhotos] = useState([]) // [{file, url}]
   const [saving, setSaving] = useState(false)
@@ -573,7 +581,7 @@ function NewJob({ artisans, say, onCancel, onCreated }) {
       }
       const { data: job, error } = await supabase
         .from('artisan_jobs')
-        .insert({ code: genOrderCode(), artisan_id: aid, order_date: orderDate || todayIso(), due_date: dueDate || null, brief: brief.trim(), internal_note: note.trim() })
+        .insert({ code: genOrderCode(), artisan_id: aid, order_date: orderDate || todayIso(), due_date: dueDate || null, pay_term: payTerm, brief: brief.trim(), internal_note: note.trim() })
         .select()
         .single()
       if (error) throw error
@@ -658,6 +666,17 @@ function NewJob({ artisans, say, onCancel, onCreated }) {
         <div className="jb-field">
           <label>กำหนดส่ง</label>
           <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+        </div>
+      </div>
+
+      <div className="jb-field">
+        <label>เงื่อนไขจ่ายช่าง</label>
+        <div className="jb-row">
+          {PAY_TERMS.map((x) => (
+            <button key={x} type="button" className={'jb-chip' + (payTerm === x ? ' on' : '')} onClick={() => setPayTerm(x)}>
+              {x === 'จ่ายทีหลัง' ? '🕒 จ่ายทีหลัง (ตอนรับของ)' : '💸 โอนมัดจำก่อน'}
+            </button>
+          ))}
         </div>
       </div>
 
@@ -1014,8 +1033,23 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted }) {
 
       {/* ---------- จ่ายเงิน ---------- */}
       <div className="jb-card">
-        <h3><span>💸 จ่ายเงินช่าง</span></h3>
-        {payments.length === 0 && <p className="jb-muted" style={{ marginBottom: 8 }}>ยังไม่มีการจ่าย</p>}
+        <h3>
+          <span>💸 จ่ายเงินช่าง</span>
+          <select
+            value={payTermOf(job)}
+            disabled={!!busy}
+            onChange={(e) => run('term', () => updateJob({ pay_term: e.target.value }), 'เปลี่ยนเงื่อนไขจ่ายแล้ว')}
+            style={{ width: 'auto', padding: '6px 8px', fontSize: 13 }}
+            title="เงื่อนไขจ่าย"
+          >
+            {PAY_TERMS.map((x) => <option key={x}>{x}</option>)}
+          </select>
+        </h3>
+        {payments.length === 0 && (
+          <p className="jb-muted" style={{ marginBottom: 8, color: payTermOf(job) === 'มัดจำก่อน' ? '#B42318' : undefined }}>
+            {payTermOf(job) === 'มัดจำก่อน' ? 'ยังไม่โอนมัดจำ — ตกลงไว้ว่าต้องโอนก่อนเริ่มงาน' : 'ยังไม่โอน — ตกลงกันว่าจ่ายทีหลัง (ตอนรับของ)'}
+          </p>
+        )}
         {payments.map((p) => (
           <div key={p.id} className="jb-list-line">
             <span className="jb-grow">
