@@ -83,3 +83,43 @@
 .jb-list-line:first-child{border-top:none}
 .jb-link{color:var(--pink-deep);font-size:13px}
 .jb-code{font-family:'Sarabun',monospace;font-size:13px;color:var(--muted);letter-spacing:.3px}
+
+/* ---------- การ์ดต่อลาย (รูป ref + ไซส์) ---------- */
+.jb-dcard{display:grid;grid-template-columns:92px 1fr;gap:12px;padding:10px;border:1px solid var(--line);
+  border-radius:14px;margin-bottom:10px;background:#fff}
+.jb-dthumb{position:relative;width:92px;height:92px;border-radius:10px;overflow:hidden;background:var(--petal);
+  display:flex;align-items:center;justify-content:center;text-align:center}
+.jb-dthumb a{display:block;width:100%;height:100%}
+.jb-dthumb img{width:100%;height:100%;object-fit:cover;display:block}
+.jb-more{position:absolute;right:4px;bottom:4px;font-size:11px;background:rgba(61,32,48,.75);color:#fff;
+  border-radius:999px;padding:1px 7px}
+.jb-dbody{min-width:0}
+.jb-dtitle{font-family:'Itim',sans-serif;font-size:16px;color:var(--plum);margin-bottom:4px;word-break:break-word}
+.jb-dsizes{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:4px}
+.jb-szpill{font-size:13px;background:var(--petal);color:var(--pink-deep);border-radius:8px;padding:2px 9px}
+.jb-szpill b{font-weight:600}
+.jb-szpill em{font-style:normal;color:var(--muted);font-size:12px}
+.jb-mini{display:inline-flex;width:34px;height:34px;border-radius:8px;overflow:hidden;background:var(--petal);
+  align-items:center;justify-content:center;text-decoration:none}
+.jb-mini img{width:100%;height:100%;object-fit:cover}
+
+/* ตัวแก้รายการแบบการ์ด */
+.jb-dedit{border:1.5px solid var(--line);border-radius:14px;padding:10px;margin-bottom:10px;background:#FFFBFD}
+.jb-dnum{width:24px;height:24px;border-radius:50%;background:var(--pink-deep);color:#fff;font-size:13px;
+  display:inline-flex;align-items:center;justify-content:center;flex:none}
+.jb-addphoto{display:inline-flex;flex-direction:column;align-items:center;justify-content:center;width:64px;height:64px;
+  border:1.5px dashed var(--pink);border-radius:10px;color:var(--pink-deep);font-size:20px;cursor:pointer;
+  background:#fff;margin:0;font-weight:400}
+.jb-addphoto span{font-size:11px;margin-top:2px}
+.jb-addphoto input{display:none}
+.jb-addphoto.small{width:34px;height:34px;font-size:14px}
+.jb-addphoto.small span{display:none}
+.jb-sizes{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.jb-size{display:flex;flex-direction:column;gap:4px;align-items:stretch}
+.jb-size input{padding:8px;font-size:15px;text-align:center;border-radius:9px}
+.jb-sz{font-family:'Itim',sans-serif;color:var(--pink-deep);text-align:center;font-size:15px}
+
+/* ใกล้มาถึง */
+.jb-near{border-color:var(--pink);background:#FFF7FA}
+.jb-near-row{display:flex;align-items:center;gap:8px;padding:8px 2px;border-top:1px solid var(--line);cursor:pointer;font-size:14px}
+.jb-near-row:first-of-type{border-top:none}

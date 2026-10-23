@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { supabase, genOrderCode } from './supabase'
-import { carrierOf, trackUrlOf } from './SnailOrderForm.jsx'
+import { CARRIERS, guessCarrier, hasShipped, shipText, TrackLink } from './carriers.jsx'
 import NavSwitch from './NavSwitch.jsx'
 import { parseBrief } from './briefParser.js'
 import './jobs.css'
@@ -30,6 +30,22 @@ function addDays(iso, n) {
   return isoOf(new Date(y, m - 1, d + n))
 }
 export const ddmm = (iso) => (iso ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}` : '-')
+export const dueText = (iso) => (iso ? ddmm(iso) : 'ไม่ได้กำหนดวันส่ง')
+// อีกกี่วันถึงกำหนด (ติดลบ = เลยมาแล้ว)
+export function daysUntil(iso) {
+  if (!iso) return null
+  const [y, m, d] = iso.split('-').map(Number)
+  const t = new Date()
+  return Math.round((new Date(y, m - 1, d) - new Date(t.getFullYear(), t.getMonth(), t.getDate())) / 864e5)
+}
+export function relDue(iso) {
+  const n = daysUntil(iso)
+  if (n == null) return 'ไม่ได้กำหนดวันส่ง'
+  if (n < 0) return `เลยกำหนด ${-n} วัน`
+  if (n === 0) return 'ครบกำหนดวันนี้'
+  if (n === 1) return 'ครบกำหนดพรุ่งนี้'
+  return `อีก ${n} วัน`
+}
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100
 export const baht = (n) => r2(n).toLocaleString('th-TH', { maximumFractionDigits: 2 })
 export const statusIdx = (s) => Math.max(0, JOB_STATUSES.indexOf(s))
@@ -96,8 +112,8 @@ function jobFlags(job, artisan) {
   if (artisan && !artisan.id_card_ok) f.push({ t: 'ยังไม่มีบัตร ปชช.', c: 'rd' })
   if (artisan && artisan.in_flow === false) f.push({ t: 'ยังไม่มีใน Flow', c: 'am' })
   if (si < 2 && job.due_date && job.due_date < today) f.push({ t: '⏰ เลยกำหนด ' + ddmm(job.due_date), c: 'rd' })
-  else if (si < 2 && !job.tracking && job.due_date && job.due_date <= addDays(today, 1)) f.push({ t: '⏰ ใกล้กำหนด · ยังไม่ส่งเลข', c: 'am' })
-  if (job.tracking) f.push({ t: '🚚 ' + (carrierOf(job.tracking) || 'มีเลขพัสดุแล้ว'), c: 'tl' })
+  else if (si < 2 && !hasShipped(job) && job.due_date && job.due_date <= addDays(today, 1)) f.push({ t: '⏰ ' + relDue(job.due_date) + ' · ยังไม่ส่ง', c: 'am' })
+  if (hasShipped(job)) f.push({ t: '🚚 ' + (shipText(job) || 'ช่างส่งของแล้ว'), c: 'tl' })
   const nd = (job.job_delays || []).length
   if (nd) f.push({ t: `🔁 เลื่อน ${nd} ครั้ง`, c: 'am' })
   // สถานะเงิน
@@ -110,7 +126,6 @@ function jobFlags(job, artisan) {
 }
 const Tags = ({ list }) => list.map((x, i) => <span key={i} className={'tag ' + x.c}>{x.t}</span>)
 
-const emptyItem = (size = 'S') => ({ design: '', size, qty: '', price: '', qty_received: '', qty_damaged: '' })
 const numOrNull = (v) => (v === '' || v == null ? null : Math.max(0, Number(v) || 0))
 
 /* =====================================================================
@@ -343,12 +358,51 @@ function JobList({ jobs, artById, artisans, filter, setFilter, q, setQ, onOpen, 
       return (x.due_date || '9999').localeCompare(y.due_date || '9999')
     })
 
+  // ---------- ใกล้มาถึง: เลยกำหนด / ครบกำหนดวันนี้-พรุ่งนี้ / ช่างส่งของแล้ว กำลังมา ----------
+  const RANK = { late: 0, soon: 1, coming: 2 }
+  const near = jobs
+    .map((j) => {
+      const si = statusIdx(j.status)
+      if (si === 2) return { j, kind: 'coming' }
+      if (si < 2 && j.due_date && j.due_date < today) return { j, kind: 'late' }
+      if (si < 2 && j.due_date && j.due_date <= addDays(today, 1)) return { j, kind: 'soon' }
+      return null
+    })
+    .filter(Boolean)
+    .sort((x, y) => RANK[x.kind] - RANK[y.kind] || (x.j.due_date || '9999').localeCompare(y.j.due_date || '9999'))
+
   return (
     <>
       <div className="jb-row" style={{ marginBottom: 4 }}>
         <button className="btn btn-rose" style={{ flex: 1 }} onClick={onNew}>➕ สร้างใบงานใหม่</button>
         <button className="btn btn-ghost" onClick={onArtisans}>👩‍🎨 รายชื่อช่าง ({artisans.length})</button>
       </div>
+
+      {near.length > 0 && (
+        <div className="jb-card jb-near">
+          <h3 style={{ marginBottom: 6 }}><span>📦 ใกล้มาถึง ({near.length})</span></h3>
+          {near.map(({ j, kind }) => {
+            const a = artById[j.artisan_id]
+            const t = jobTotals(j)
+            return (
+              <div key={j.id} className="jb-near-row" onClick={() => onOpen(j.id)} role="button">
+                <span className={'tag ' + (kind === 'late' ? 'rd' : kind === 'soon' ? 'am' : 'tl')} style={{ margin: 0 }}>
+                  {kind === 'coming' ? '🚚 กำลังมา' : relDue(j.due_date)}
+                </span>
+                <span className="jb-grow">
+                  <b style={{ fontWeight: 400, color: 'var(--plum)' }}>{artisanShort(a)}</b>
+                  <span className="jb-small"> · {t.qty} ชุด{kind === 'coming' && shipText(j) ? ' · ' + shipText(j) : ''}</span>
+                </span>
+                {kind === 'coming' && (
+                  <span onClick={(e) => e.stopPropagation()}>
+                    <TrackLink tk={j.tracking} carrier={j.tracking_carrier} className="jb-link">เช็ก ↗</TrackLink>
+                  </span>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
 
       <div className="jb-chips">
         {FILTERS.map(([k, label]) => (
@@ -357,7 +411,7 @@ function JobList({ jobs, artById, artisans, filter, setFilter, q, setQ, onOpen, 
           </button>
         ))}
       </div>
-      <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="ค้นหา ชื่อช่าง / ลาย / เลขงาน" style={{ marginBottom: 12 }} />
+      <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="🔍 ค้นหา ชื่อช่าง / ชื่อเฟส / ลาย / เลขงาน" style={{ marginBottom: 12 }} />
 
       {shown.length === 0 && (
         <div className="jb-card" style={{ textAlign: 'center' }}>
@@ -374,8 +428,9 @@ function JobList({ jobs, artById, artisans, filter, setFilter, q, setQ, onOpen, 
               <span className="jb-name">{artisanShort(a)}</span>
               <span className="tag pk" style={{ marginTop: 2 }}>{j.status}</span>
             </div>
+            {a?.facebook && <div className="jb-small">FB {a.facebook}</div>}
             <div className="jb-muted">
-              {t.designs} ลาย · {t.qty} ชุด · {baht(t.amount)} ฿ · ส่ง {ddmm(j.due_date)}
+              {t.designs} ลาย · {t.qty} ชุด · {baht(t.amount)} ฿ · {j.due_date ? 'ส่ง ' + ddmm(j.due_date) : 'ไม่ได้กำหนดวันส่ง'}
             </div>
             <Tags list={jobFlags(j, a)} />
           </button>
@@ -386,79 +441,229 @@ function JobList({ jobs, artById, artisans, filter, setFilter, q, setQ, onOpen, 
 }
 
 /* =====================================================================
-   ตารางแก้รายการ (ลาย / ไซส์ / จำนวน / ราคา / รับจริง / ชำรุด)
+   รายการแบบ "การ์ดต่อลาย": รูป ref + S/M/L + ราคา (ลายเดียวหลายไซส์อยู่การ์ดเดียว)
+   ในฐานข้อมูลยังเก็บเป็นแถวละไซส์ (job_items) · รูปผูกกับลายด้วย job_files.design
    ===================================================================== */
-function ItemsEditor({ rows, setRows, showReceive }) {
-  const upd = (i, k, v) => setRows(rows.map((r, j) => (j === i ? { ...r, [k]: v } : r)))
-  const del = (i) => setRows(rows.filter((_, j) => j !== i))
-  // คัดลอกแถว → ลายเดิม ไซส์ถัดไป (กรอกลายเดียวหลายไซส์ได้เร็ว)
-  const dup = (i) => {
-    const r = rows[i]
-    const next = SIZES[(SIZES.indexOf(r.size) + 1) % SIZES.length]
-    const copy = { ...r, size: next, qty: '', qty_received: '', qty_damaged: '' }
-    setRows([...rows.slice(0, i + 1), copy, ...rows.slice(i + 1)])
+
+// แถวจากฐานข้อมูล → กลุ่มตามลาย (+ราคา)
+export function groupItems(items) {
+  const map = new Map()
+  for (const i of [...(items || [])].sort((a, b) => (a.sort ?? 0) - (b.sort ?? 0) || (a.id ?? 0) - (b.id ?? 0))) {
+    const design = (i.design || '').trim() || 'ตามรูป'
+    const key = design + '|' + r2(i.price)
+    if (!map.has(key)) map.set(key, { design, price: r2(i.price), sizes: [] })
+    map.get(key).sizes.push(i)
   }
-  const total = r2(rows.reduce((s, r) => s + (Number(r.qty) || 0) * (Number(r.price) || 0), 0))
-  const qty = rows.reduce((s, r) => s + (Number(r.qty) || 0), 0)
+  return [...map.values()].map((g) => {
+    g.sizes.sort((a, b) => SIZES.indexOf(a.size) - SIZES.indexOf(b.size))
+    g.qty = g.sizes.reduce((s, i) => s + (Number(i.qty) || 0), 0)
+    g.amount = r2(g.qty * g.price)
+    g.anyRecv = g.sizes.some((i) => i.qty_received != null)
+    return g
+  })
+}
+
+let gid = 0
+const emptySz = () => ({ qty: '', recv: '', dmg: '' })
+const newGroup = (design = '', price = '') => ({ key: ++gid, design, price, S: emptySz(), M: emptySz(), L: emptySz(), photos: [] })
+
+function addSz(g, size, qty, recv, dmg) {
+  const cur = g[size] || emptySz()
+  const plus = (a, b) => (a === '' && (b === '' || b == null) ? '' : String((Number(a) || 0) + (Number(b) || 0)))
+  g[size] = { qty: plus(cur.qty, qty), recv: recv == null || recv === '' ? cur.recv : plus(cur.recv, recv), dmg: dmg == null || dmg === '' ? cur.dmg : plus(cur.dmg, dmg) }
+}
+
+function groupsFromItems(items) {
+  return groupItems(items).map((g) => {
+    const ng = newGroup(g.design === 'ตามรูป' ? '' : g.design, g.price ? String(g.price) : '')
+    ng.origDesign = g.design
+    for (const i of g.sizes) addSz(ng, SIZES.includes(i.size) ? i.size : 'M', i.qty, i.qty_received, i.qty_damaged)
+    return ng
+  })
+}
+
+// ผลจากตัวแยกบรีฟ (แถวละไซส์) → กลุ่ม
+function groupsFromParsed(items) {
+  const map = new Map()
+  for (const i of items) {
+    const d = i.design === 'ตามรูป' ? '' : i.design || ''
+    const key = d + '|' + (i.price || '')
+    if (!map.has(key)) map.set(key, newGroup(d, i.price || ''))
+    addSz(map.get(key), i.size, i.qty)
+  }
+  return [...map.values()]
+}
+
+// ลายที่ไม่ได้ตั้งชื่อ: มีลายเดียว = "ตามรูป" · หลายลาย = "ตามรูป 1", "ตามรูป 2" (รูปจะได้ไม่ปนกัน)
+function nameGroups(groups) {
+  const blank = groups.filter((g) => !g.design.trim()).length
+  let n = 0
+  return groups.map((g) => (g.design.trim() ? { ...g, design: g.design.trim() } : { ...g, design: blank > 1 ? `ตามรูป ${++n}` : 'ตามรูป' }))
+}
+
+function rowsFromGroups(groups) {
+  const rows = []
+  for (const g of nameGroups(groups))
+    for (const sz of SIZES) {
+      const v = g[sz]
+      if (Number(v.qty) > 0 || v.recv !== '')
+        rows.push({ design: g.design, size: sz, qty: v.qty, price: g.price, qty_received: v.recv, qty_damaged: v.dmg })
+    }
+  return rows
+}
+
+const groupQty = (g) => SIZES.reduce((s, z) => s + (Number(g[z].qty) || 0), 0)
+
+function GroupsEditor({ groups, setGroups, showReceive, allowPhotos }) {
+  const upd = (k, patch) => setGroups(groups.map((g) => (g.key === k ? { ...g, ...patch } : g)))
+  const updSz = (k, sz, f, v) => setGroups(groups.map((g) => (g.key === k ? { ...g, [sz]: { ...g[sz], [f]: v } } : g)))
+  const del = (k) => {
+    const g = groups.find((x) => x.key === k)
+    ;(g?.photos || []).forEach((p) => URL.revokeObjectURL(p.url))
+    setGroups(groups.filter((x) => x.key !== k))
+  }
+  const addPhotos = (k, e) => {
+    const list = Array.from(e.target.files || [])
+    e.target.value = ''
+    const g = groups.find((x) => x.key === k)
+    upd(k, { photos: [...g.photos, ...list.map((file) => ({ file, url: URL.createObjectURL(file) }))] })
+  }
+  const delPhoto = (k, i) => {
+    const g = groups.find((x) => x.key === k)
+    URL.revokeObjectURL(g.photos[i].url)
+    upd(k, { photos: g.photos.filter((_, n) => n !== i) })
+  }
+  const num = (v) => v.replace(/\D/g, '')
+  const total = r2(groups.reduce((s, g) => s + groupQty(g) * (Number(g.price) || 0), 0))
+  const qty = groups.reduce((s, g) => s + groupQty(g), 0)
 
   return (
     <>
-      <div className="jb-scroll">
-        <table className="jb-table">
-          <thead>
-            <tr>
-              <th>ลาย</th>
-              <th>ไซส์</th>
-              <th>จำนวน</th>
-              <th>ราคา/ชุด</th>
-              {showReceive && <th>รับจริง</th>}
-              {showReceive && <th>ชำรุด</th>}
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r, i) => (
-              <tr key={i}>
-                <td style={{ minWidth: 120 }}>
-                  <input value={r.design} onChange={(e) => upd(i, 'design', e.target.value)} placeholder="ตามรูป" />
-                </td>
-                <td style={{ width: 72 }}>
-                  <select value={r.size} onChange={(e) => upd(i, 'size', e.target.value)} style={{ minWidth: 60, padding: '6px 4px' }}>
-                    {SIZES.map((s) => <option key={s}>{s}</option>)}
-                  </select>
-                </td>
-                <td style={{ width: 70 }}>
-                  <input inputMode="numeric" value={r.qty} onChange={(e) => upd(i, 'qty', e.target.value.replace(/\D/g, ''))} placeholder="0" />
-                </td>
-                <td style={{ width: 80 }}>
-                  <input inputMode="decimal" value={r.price} onChange={(e) => upd(i, 'price', e.target.value.replace(/[^\d.]/g, ''))} placeholder="0" />
-                </td>
+      {groups.map((g, n) => (
+        <div key={g.key} className="jb-dedit">
+          <div className="jb-row" style={{ marginBottom: 8 }}>
+            <span className="jb-dnum">{n + 1}</span>
+            <input className="jb-grow" value={g.design} onChange={(e) => upd(g.key, { design: e.target.value })} placeholder="ชื่อลาย (เว้นว่าง = ตามรูป)" />
+            <button className="icon-btn" title="ลบลายนี้" onClick={() => del(g.key)}>🗑</button>
+          </div>
+
+          {allowPhotos && (
+            <div className="jb-row" style={{ marginBottom: 8, alignItems: 'flex-start' }}>
+              {g.photos.map((p, i) => (
+                <div key={p.url} className="jb-file" style={{ width: 64 }}>
+                  {/pdf/.test(p.file.type) ? <span style={{ fontSize: 24 }}>📄</span> : <img src={p.url} alt="ref" />}
+                  <button className="x" title="เอาออก" onClick={() => delPhoto(g.key, i)}>✕</button>
+                </div>
+              ))}
+              <label className="jb-addphoto">
+                📷<span>{g.photos.length ? 'เพิ่ม' : 'รูป ref'}</span>
+                <input type="file" accept="image/*,application/pdf" multiple onChange={(e) => addPhotos(g.key, e)} />
+              </label>
+            </div>
+          )}
+
+          <div className="jb-sizes">
+            {SIZES.map((sz) => (
+              <div key={sz} className="jb-size">
+                <span className="jb-sz">{sz}</span>
+                <input inputMode="numeric" value={g[sz].qty} onChange={(e) => updSz(g.key, sz, 'qty', num(e.target.value))} placeholder="0" />
                 {showReceive && (
-                  <td style={{ width: 70 }}>
-                    <input inputMode="numeric" value={r.qty_received ?? ''} onChange={(e) => upd(i, 'qty_received', e.target.value.replace(/\D/g, ''))} placeholder="-" />
-                  </td>
+                  <>
+                    <input inputMode="numeric" value={g[sz].recv} onChange={(e) => updSz(g.key, sz, 'recv', num(e.target.value))} placeholder="รับ" title="รับจริง" />
+                    <input inputMode="numeric" value={g[sz].dmg} onChange={(e) => updSz(g.key, sz, 'dmg', num(e.target.value))} placeholder="ชำรุด" title="ชำรุด" />
+                  </>
                 )}
-                {showReceive && (
-                  <td style={{ width: 70 }}>
-                    <input inputMode="numeric" value={r.qty_damaged ?? ''} onChange={(e) => upd(i, 'qty_damaged', e.target.value.replace(/\D/g, ''))} placeholder="-" />
-                  </td>
-                )}
-                <td style={{ whiteSpace: 'nowrap' }}>
-                  <button className="icon-btn" title="คัดลอกเป็นไซส์ถัดไป" onClick={() => dup(i)}>⧉</button>
-                  <button className="icon-btn" title="ลบแถว" onClick={() => del(i)}>🗑</button>
-                </td>
-              </tr>
+              </div>
             ))}
-          </tbody>
-        </table>
-      </div>
-      <div className="jb-row" style={{ marginTop: 8 }}>
-        <button className="btn btn-ghost btn-sm" onClick={() => setRows([...rows, emptyItem(rows.length ? rows[rows.length - 1].size : 'S')])}>➕ เพิ่มแถว</button>
-        <span className="jb-small">⧉ = คัดลอกลายเดิมเป็นไซส์ถัดไป</span>
-      </div>
+          </div>
+          {showReceive && <p className="jb-small" style={{ marginTop: 2 }}>ช่องบน = สั่ง · ช่องกลาง = รับจริง · ช่องล่าง = ชำรุด</p>}
+
+          <div className="jb-row" style={{ marginTop: 8 }}>
+            <span className="jb-small">ชุดละ</span>
+            <input inputMode="decimal" style={{ width: 90 }} value={g.price} onChange={(e) => upd(g.key, { price: e.target.value.replace(/[^\d.]/g, '') })} placeholder="0" />
+            <span className="jb-grow" style={{ textAlign: 'right', fontSize: 14 }}>
+              {groupQty(g)} ชุด · {baht(groupQty(g) * (Number(g.price) || 0))} ฿
+            </span>
+          </div>
+        </div>
+      ))}
+      <button className="btn btn-ghost btn-sm" style={{ width: '100%' }} onClick={() => setGroups([...groups, newGroup()])}>➕ เพิ่มลาย</button>
       <div className="jb-total"><span>รวม {qty} ชุด</span><span>{baht(total)} ฿</span></div>
     </>
   )
+}
+
+// แสดงรายการแบบการ์ดต่อลาย (หลังร้าน + หน้าช่าง)
+export function DesignCards({ items, files = [], onAddPhoto, onDelFile, busy }) {
+  const groups = groupItems(items)
+  const filesOf = (d) => files.filter((f) => (f.design || '') === d || (d === 'ตามรูป' && f.design === 'ตามรูป'))
+  if (!groups.length) return <p className="jb-muted">ยังไม่มีรายการ</p>
+  return (
+    <div>
+      {groups.map((g, n) => {
+        const ph = filesOf(g.design)
+        return (
+          <div key={n} className="jb-dcard">
+            <div className="jb-dthumb">
+              {ph.length ? (
+                <a href={fileUrl(ph[0].path)} target="_blank" rel="noreferrer">
+                  {isPdf(ph[0].path) ? <span style={{ fontSize: 30 }}>📄</span> : <img src={fileUrl(ph[0].path)} alt={g.design} loading="lazy" />}
+                </a>
+              ) : (
+                <span className="jb-small">ไม่มีรูป</span>
+              )}
+              {ph.length > 1 && <span className="jb-more">+{ph.length - 1}</span>}
+            </div>
+            <div className="jb-dbody">
+              <div className="jb-dtitle">{g.design}</div>
+              <div className="jb-dsizes">
+                {g.sizes.map((i, k) => (
+                  <span key={k} className="jb-szpill">
+                    {i.size} <b>{i.qty}</b>
+                    {i.qty_received != null && (
+                      <em>
+                        {' '}รับ {i.qty_received}
+                        {i.qty_damaged ? ` · ชำรุด ${i.qty_damaged}` : ''}
+                      </em>
+                    )}
+                  </span>
+                ))}
+              </div>
+              <div className="jb-small">
+                {g.qty} ชุด · ชุดละ {baht(g.price)} = <b style={{ color: 'var(--pink-deep)', fontWeight: 400 }}>{baht(g.amount)} ฿</b>
+              </div>
+              {(ph.length > 1 || onAddPhoto) && (
+                <div className="jb-row" style={{ marginTop: 6, gap: 6 }}>
+                  {ph.slice(1).map((f, k) => (
+                    <a key={k} href={fileUrl(f.path)} target="_blank" rel="noreferrer" className="jb-mini">
+                      {isPdf(f.path) ? '📄' : <img src={fileUrl(f.path)} alt="" loading="lazy" />}
+                    </a>
+                  ))}
+                  {onAddPhoto && (
+                    <label className="jb-addphoto small" title="เพิ่มรูป ref ของลายนี้">
+                      📷<span>+รูป</span>
+                      <input type="file" accept="image/*,application/pdf" multiple disabled={busy} onChange={(e) => onAddPhoto(g.design, e)} />
+                    </label>
+                  )}
+                  {onDelFile && ph.length > 0 && (
+                    <button className="icon-btn" title="ลบรูปของลายนี้ทีละรูป" onClick={() => onDelFile(ph[ph.length - 1])}>
+                      🗑 รูปล่าสุด
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// รูปที่ไม่ได้ผูกกับลายไหน (รูปรวม / รูปส่งงานจากช่าง)
+export function looseFiles(items, files) {
+  const names = new Set(groupItems(items).map((g) => g.design))
+  return (files || []).filter((f) => !f.design || !names.has(f.design))
 }
 
 function cleanItems(rows, jobId) {
@@ -480,7 +685,7 @@ function cleanItems(rows, jobId) {
 export function artisanLabel(a) {
   if (!a) return '(ไม่พบช่าง)'
   const nick = a.nickname && a.nickname !== a.name ? a.nickname : ''
-  return [a.code, nick, nick ? '· ' + a.name : a.name].filter(Boolean).join(' ')
+  return [a.code, nick, nick ? '· ' + a.name : a.name, a.facebook ? `(FB ${a.facebook})` : ''].filter(Boolean).join(' ')
 }
 export function artisanShort(a) {
   if (!a) return '(ไม่พบช่าง)'
@@ -500,16 +705,18 @@ function NewJob({ artisans, say, onCancel, onCreated }) {
   const [newName, setNewName] = useState('')
   const [newFb, setNewFb] = useState('')
   const [orderDate, setOrderDate] = useState(todayIso())
-  const [dueDate, setDueDate] = useState(addDays(todayIso(), 7))
+  const [dueDate, setDueDate] = useState('') // ว่าง = ไม่ได้กำหนดวันส่ง
   const [brief, setBrief] = useState('')
   const [note, setNote] = useState('')
-  const [rows, setRows] = useState([emptyItem('S')])
+  const [groups, setGroups] = useState(() => [newGroup()])
   const [payTerm, setPayTerm] = useState('จ่ายทีหลัง')
   const [paste, setPaste] = useState('')
-  const [photos, setPhotos] = useState([]) // [{file, url}]
   const [saving, setSaving] = useState(false)
+  const groupsRef = useRef(groups)
+  groupsRef.current = groups
 
-  useEffect(() => () => photos.forEach((p) => URL.revokeObjectURL(p.url)), []) // eslint-disable-line
+  // ปิดหน้า → คืนหน่วยความจำรูปตัวอย่าง
+  useEffect(() => () => groupsRef.current.forEach((g) => g.photos.forEach((p) => URL.revokeObjectURL(p.url))), [])
 
   const needle = findQ.trim().toLowerCase()
   const options = needle ? active.filter((a) => artisanHay(a).includes(needle)) : active
@@ -544,8 +751,12 @@ function NewJob({ artisans, say, onCancel, onCreated }) {
       got.push('กำหนดส่ง ' + ddmm(r.dueDate))
     }
     if (r.items.length) {
-      setRows(r.items.map((i) => ({ ...emptyItem(i.size), ...i })))
-      got.push(`${r.items.length} รายการ`)
+      const ng = groupsFromParsed(r.items)
+      // เก็บรูปที่แนบไว้แล้วในลายแรก (ถ้ามี) ไม่ให้หาย
+      const keep = groups.flatMap((g) => g.photos)
+      if (keep.length) ng[0].photos = keep
+      setGroups(ng)
+      got.push(`${ng.length} ลาย`)
     }
     if (r.brief) {
       setBrief((b) => (b.trim() ? b.trim() + '\n' + r.brief : r.brief))
@@ -554,23 +765,12 @@ function NewJob({ artisans, say, onCancel, onCreated }) {
     say(got.length ? '✨ กรอกให้แล้ว: ' + got.join(' · ') + ' — เช็กอีกทีก่อนบันทึกนะคะ' : 'อ่านไม่เจอข้อมูล ลองพิมพ์ไซส์+จำนวน เช่น "M 50" ดูค่ะ', got.length > 0)
   }
 
-  function addPhotos(e) {
-    const list = Array.from(e.target.files || [])
-    e.target.value = ''
-    setPhotos((p) => [...p, ...list.map((file) => ({ file, url: URL.createObjectURL(file) }))])
-  }
-  function removePhoto(i) {
-    setPhotos((p) => {
-      URL.revokeObjectURL(p[i].url)
-      return p.filter((_, k) => k !== i)
-    })
-  }
-
   async function save() {
-    const items = cleanItems(rows, 0)
+    const named = nameGroups(groups)
+    const items = cleanItems(rowsFromGroups(groups), 0)
     if (!artisanId) return say('เลือกช่างก่อนนะคะ', false)
     if (artisanId === 'new' && !newName.trim()) return say('ใส่ชื่อช่างก่อนนะคะ', false)
-    if (!items.length) return say('ใส่ไซส์ + จำนวนอย่างน้อย 1 แถว', false)
+    if (!items.length) return say('ใส่จำนวนอย่างน้อย 1 ไซส์', false)
     setSaving(true)
     try {
       let aid = Number(artisanId)
@@ -585,19 +785,20 @@ function NewJob({ artisans, say, onCancel, onCreated }) {
         .select()
         .single()
       if (error) throw error
-      const { error: e2 } = await supabase.from('job_items').insert(cleanItems(rows, job.id))
+      const { error: e2 } = await supabase.from('job_items').insert(cleanItems(rowsFromGroups(groups), job.id))
       if (e2) throw e2
-      // รูปบรีฟ — อัปหลังได้เลขงานแล้ว (ถ้าบางรูปพัง ใบงานยังอยู่ แนบเพิ่มในหน้าใบงานได้)
+      // รูป ref ต่อลาย — อัปหลังได้เลขงานแล้ว (ถ้าบางรูปพัง ใบงานยังอยู่ แนบเพิ่มในหน้าใบงานได้)
       let failed = 0
-      for (const p of photos) {
-        try {
-          const path = await uploadJobFile(job.code, p.file)
-          const { error: e3 } = await supabase.from('job_files').insert({ job_id: job.id, path, kind: 'บรีฟ', uploaded_by: 'ร้าน' })
-          if (e3) throw e3
-        } catch {
-          failed++
+      for (const g of named)
+        for (const p of g.photos) {
+          try {
+            const path = await uploadJobFile(job.code, p.file)
+            const { error: e3 } = await supabase.from('job_files').insert({ job_id: job.id, path, kind: 'บรีฟ', uploaded_by: 'ร้าน', design: g.design })
+            if (e3) throw e3
+          } catch {
+            failed++
+          }
         }
-      }
       say(failed ? `✅ สร้างใบงานแล้ว แต่รูปอัปไม่ได้ ${failed} รูป — แนบใหม่ในหน้าใบงานได้` : '✅ สร้างใบงานแล้ว', !failed)
       await onCreated(job.id)
     } catch (e) {
@@ -606,6 +807,8 @@ function NewJob({ artisans, say, onCancel, onCreated }) {
       setSaving(false)
     }
   }
+
+  const nPhotos = groups.reduce((s, g) => s + g.photos.length, 0)
 
   return (
     <div className="jb-card">
@@ -632,7 +835,7 @@ function NewJob({ artisans, say, onCancel, onCreated }) {
       {/* ---------- ช่าง ---------- */}
       <div className="jb-field">
         <label>ช่าง</label>
-        <input value={findQ} onChange={(e) => setFindQ(e.target.value)} placeholder="🔍 ค้นหา รหัส / ชื่อ / ชื่อในใบ / เฟส" style={{ marginBottom: 6 }} />
+        <input value={findQ} onChange={(e) => setFindQ(e.target.value)} placeholder="🔍 ค้นหา รหัส / ชื่อ / ชื่อในใบ / ชื่อเฟส" style={{ marginBottom: 6 }} />
         <select value={artisanId} onChange={(e) => setArtisanId(e.target.value)}>
           <option value="">— เลือกช่าง ({options.length}) —</option>
           {options.map((a) => (
@@ -653,7 +856,7 @@ function NewJob({ artisans, say, onCancel, onCreated }) {
         {artisanId === 'new' && (
           <div className="jb-2col" style={{ marginTop: 8 }}>
             <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="ชื่อช่างใหม่" autoFocus />
-            <input value={newFb} onChange={(e) => setNewFb(e.target.value)} placeholder="ชื่อ Facebook (ไม่บังคับ)" />
+            <input value={newFb} onChange={(e) => setNewFb(e.target.value)} placeholder="ชื่อ Facebook" />
           </div>
         )}
       </div>
@@ -664,8 +867,9 @@ function NewJob({ artisans, say, onCancel, onCreated }) {
           <input type="date" value={orderDate} onChange={(e) => setOrderDate(e.target.value)} />
         </div>
         <div className="jb-field">
-          <label>กำหนดส่ง</label>
+          <label>กำหนดส่ง {dueDate && <span className="mini-x" style={{ cursor: 'pointer' }} onClick={() => setDueDate('')}>✕ ไม่กำหนด</span>}</label>
           <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+          {!dueDate && <p className="jb-small" style={{ marginTop: 3 }}>ไม่ได้กำหนดวันส่ง</p>}
         </div>
       </div>
 
@@ -680,44 +884,21 @@ function NewJob({ artisans, say, onCancel, onCreated }) {
         </div>
       </div>
 
-      {/* ---------- รูปบรีฟ ---------- */}
-      <div className="jb-field">
-        <div className="jb-row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
-          <label style={{ margin: 0 }}>📷 รูปบรีฟ / รูป ref (ช่างเห็น)</label>
-          <label className="btn btn-ghost btn-sm jb-upload" style={{ margin: 0 }}>
-            ⬆ แนบรูป
-            <input type="file" accept="image/*,application/pdf" multiple onChange={addPhotos} />
-          </label>
-        </div>
-        {photos.length > 0 ? (
-          <div className="jb-files">
-            {photos.map((p, i) => (
-              <div key={p.url} className="jb-file">
-                {/pdf/.test(p.file.type) ? <span style={{ fontSize: 30 }}>📄</span> : <img src={p.url} alt="บรีฟ" />}
-                <button className="x" title="เอาออก" onClick={() => removePhoto(i)}>✕</button>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <p className="jb-small">สั่งตามรูปได้เลย — แนบรูป แล้วใส่แค่ไซส์ + จำนวนด้านล่าง</p>
-        )}
-      </div>
+      <label>🎨 รายการ — แนบรูป ref ไว้ในแต่ละลาย</label>
+      <GroupsEditor groups={groups} setGroups={setGroups} allowPhotos />
 
-      <div className="jb-field">
+      <div className="jb-field" style={{ marginTop: 12 }}>
         <label>บรีฟ / หมายเหตุ (ช่างเห็น)</label>
         <textarea value={brief} onChange={(e) => setBrief(e.target.value)} placeholder="สี ทรง ความยาว แพ็กแบบไหน ฯลฯ" style={{ minHeight: 60 }} />
       </div>
 
-      <label>รายการ <span className="jb-small" style={{ fontWeight: 400 }}>(ชื่อลายเว้นว่างได้ = "ตามรูป")</span></label>
-      <ItemsEditor rows={rows} setRows={setRows} />
-
-      <div className="jb-field" style={{ marginTop: 12 }}>
+      <div className="jb-field">
         <label>โน้ตภายใน (ช่างไม่เห็น)</label>
         <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="ไม่บังคับ" style={{ minHeight: 56 }} />
       </div>
 
       <button className="btn btn-rose" style={{ width: '100%' }} onClick={save} disabled={saving}>
-        {saving ? (photos.length ? 'กำลังบันทึก + อัปรูป...' : 'กำลังบันทึก...') : '💾 บันทึกใบงาน'}
+        {saving ? (nPhotos ? `กำลังบันทึก + อัปรูป ${nPhotos} รูป...` : 'กำลังบันทึก...') : '💾 บันทึกใบงาน'}
       </button>
     </div>
   )
@@ -734,11 +915,12 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted }) {
   const files = [...(job.job_files || [])].sort((a, b) => a.id - b.id)
 
   const [editItems, setEditItems] = useState(false)
-  const [rows, setRows] = useState([])
+  const [groups, setGroups] = useState([])
   const [editBrief, setEditBrief] = useState(false)
   const [brief, setBrief] = useState(job.brief)
   const [note, setNote] = useState(job.internal_note)
   const [tracking, setTracking] = useState(job.tracking)
+  const [carrier, setCarrier] = useState(job.tracking_carrier || guessCarrier(job.tracking))
   const [busy, setBusy] = useState('')
   // ฟอร์มจ่ายเงิน
   const [payKind, setPayKind] = useState(t.paid > 0 ? 'ปิดยอด' : 'มัดจำ')
@@ -754,7 +936,8 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted }) {
 
   useEffect(() => {
     setTracking(job.tracking)
-  }, [job.tracking])
+    setCarrier(job.tracking_carrier || guessCarrier(job.tracking))
+  }, [job.tracking, job.tracking_carrier])
 
   async function run(label, fn, okMsg) {
     setBusy(label)
@@ -785,21 +968,12 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted }) {
   }
 
   function startEditItems() {
-    setRows(
-      items.map((i) => ({
-        design: i.design,
-        size: i.size,
-        qty: String(i.qty ?? ''),
-        price: String(i.price ?? ''),
-        qty_received: i.qty_received == null ? '' : String(i.qty_received),
-        qty_damaged: i.qty_damaged == null ? '' : String(i.qty_damaged),
-      }))
-    )
+    setGroups(groupsFromItems(items))
     setEditItems(true)
   }
 
   function saveItems() {
-    const clean = cleanItems(rows, job.id)
+    const clean = cleanItems(rowsFromGroups(groups), job.id)
     if (!clean.length) return say('ต้องมีอย่างน้อย 1 แถว', false)
     if (!window.confirm('บันทึกรายการที่แก้ใช่ไหมคะ?')) return
     run(
@@ -807,6 +981,11 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted }) {
       async () => {
         await supabase.from('job_items').delete().eq('job_id', job.id).then(must)
         await supabase.from('job_items').insert(clean).then(must)
+        // เปลี่ยนชื่อลาย → ย้ายรูปของลายนั้นตามไปด้วย
+        const named = nameGroups(groups)
+        for (const g of named)
+          if (g.origDesign && g.origDesign !== g.design)
+            await supabase.from('job_files').update({ design: g.design }).eq('job_id', job.id).eq('design', g.origDesign).then(must)
         setEditItems(false)
       },
       '✅ บันทึกรายการแล้ว'
@@ -814,10 +993,29 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted }) {
   }
 
   function saveTracking() {
-    const tk = tracking.replace(/\s/g, '').toUpperCase()
-    const patch = { tracking: tk, tracking_at: tk ? new Date().toISOString() : null }
-    if (tk && statusIdx(job.status) < 2) patch.status = 'ช่างส่งของแล้ว'
-    run('track', () => updateJob(patch), tk ? '✅ บันทึกเลขพัสดุแล้ว' : 'ลบเลขพัสดุแล้ว')
+    const tk = (tracking || '').replace(/\s/g, '').toUpperCase()
+    const c = carrier || guessCarrier(tk)
+    const shipped = !!tk || c === 'มาส่งเอง'
+    const patch = { tracking: c === 'มาส่งเอง' ? '' : tk, tracking_carrier: shipped ? c : '', tracking_at: shipped ? new Date().toISOString() : null }
+    if (shipped && statusIdx(job.status) < 2) patch.status = 'ช่างส่งของแล้ว'
+    run('track', () => updateJob(patch), shipped ? '✅ บันทึกการส่งของแล้ว' : 'ลบเลขพัสดุแล้ว')
+  }
+
+  // เพิ่มรูป ref ให้ลาย
+  function addDesignPhoto(design, e) {
+    const list = Array.from(e.target.files || [])
+    e.target.value = ''
+    if (!list.length) return
+    run(
+      'file',
+      async () => {
+        for (const f of list) {
+          const path = await uploadJobFile(job.code, f)
+          await supabase.from('job_files').insert({ job_id: job.id, path, kind: 'บรีฟ', uploaded_by: 'ร้าน', design }).then(must)
+        }
+      },
+      `✅ เพิ่มรูปให้ลาย "${design}" แล้ว`
+    )
   }
 
   function addPayment() {
@@ -878,7 +1076,7 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted }) {
       async () => {
         for (const f of list) {
           const path = await uploadJobFile(job.code, f)
-          await supabase.from('job_files').insert({ job_id: job.id, path, kind: fileKind, uploaded_by: 'ร้าน' }).then(must)
+          await supabase.from('job_files').insert({ job_id: job.id, path, kind: fileKind, uploaded_by: 'ร้าน', design: '' }).then(must)
         }
       },
       `✅ อัป ${list.length} ไฟล์แล้ว`
@@ -911,7 +1109,7 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted }) {
     })()
   }
 
-  const tkUrl = trackUrlOf(job.tracking)
+  const loose = looseFiles(items, files)
 
   return (
     <>
@@ -945,8 +1143,9 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted }) {
           <div className="jb-field">
             <label>วันสั่ง → กำหนดส่ง</label>
             <div style={{ padding: '9px 2px', fontSize: 15 }}>
-              {ddmm(job.order_date)} → <b style={{ color: 'var(--pink-deep)', fontWeight: 400 }}>{ddmm(job.due_date)}</b>
-              {delays.length > 0 && <span className="jb-small"> (เดิม {ddmm(delays[0].old_date)})</span>}
+              {ddmm(job.order_date)} → <b style={{ color: 'var(--pink-deep)', fontWeight: 400 }}>{dueText(job.due_date)}</b>
+              {delays.length > 0 && <span className="jb-small"> (เดิม {dueText(delays[0].old_date)})</span>}
+              {job.due_date && statusIdx(job.status) < 2 && <div className="jb-small">{relDue(job.due_date)}</div>}
             </div>
           </div>
         </div>
@@ -990,37 +1189,10 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted }) {
         </h3>
 
         {editItems ? (
-          <ItemsEditor rows={rows} setRows={setRows} showReceive />
+          <GroupsEditor groups={groups} setGroups={setGroups} showReceive />
         ) : (
           <>
-            <div className="jb-scroll">
-              <table className="jb-table">
-                <thead>
-                  <tr>
-                    <th>ลาย</th>
-                    <th>ไซส์</th>
-                    <th className="num">สั่ง</th>
-                    <th className="num">ราคา</th>
-                    <th className="num">รวม</th>
-                    {t.anyRecv && <th className="num">รับ</th>}
-                    {t.anyRecv && <th className="num">ชำรุด</th>}
-                  </tr>
-                </thead>
-                <tbody>
-                  {items.map((i) => (
-                    <tr key={i.id}>
-                      <td>{i.design}</td>
-                      <td>{i.size}</td>
-                      <td className="num">{i.qty}</td>
-                      <td className="num">{baht(i.price)}</td>
-                      <td className="num">{baht(i.qty * i.price)}</td>
-                      {t.anyRecv && <td className="num">{i.qty_received ?? '-'}</td>}
-                      {t.anyRecv && <td className="num" style={{ color: i.qty_damaged ? '#B42318' : undefined }}>{i.qty_damaged ?? '-'}</td>}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <DesignCards items={items} files={files} onAddPhoto={addDesignPhoto} onDelFile={delFile} busy={!!busy} />
             <div className="jb-total"><span>รวม {t.qty} ชุด</span><span>{baht(t.amount)} ฿</span></div>
             {t.anyRecv && (
               <p className="jb-small" style={{ textAlign: 'right', marginTop: 4 }}>
@@ -1141,32 +1313,36 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted }) {
         )}
       </div>
 
-      {/* ---------- เลขพัสดุที่ช่างส่งมา ---------- */}
+      {/* ---------- ขนส่งที่ช่างส่งมา ---------- */}
       <div className="jb-card" style={{ borderColor: 'var(--pink)' }}>
-        <h3><span>🚚 เลขพัสดุที่ช่างส่งมาหาร้าน</span></h3>
-        <p className="jb-small" style={{ marginBottom: 8 }}>อยู่ในใบงานนี้เท่านั้น ไม่ไปปนกับออเดอร์ลูกค้า · ปกติช่างกรอกเอง (หลังขั้น 3) ร้านกรอกแทนได้</p>
-        <div className="jb-row">
-          <input className="jb-grow" value={tracking} onChange={(e) => setTracking(e.target.value)} placeholder="ยังไม่ส่งเลข" />
-          <button className="btn btn-rose btn-sm" disabled={!!busy || tracking === job.tracking} onClick={saveTracking}>บันทึก</button>
-        </div>
-        {job.tracking && (
-          <p style={{ marginTop: 8, fontSize: 14 }}>
-            {carrierOf(job.tracking) || 'ไม่รู้จักขนส่ง'}
-            {job.tracking_at && <span className="jb-small"> · กรอกเมื่อ {ddmm(job.tracking_at.slice(0, 10))}</span>}
-            {tkUrl && (
-              <>
-                {' · '}
-                <a className="jb-link" href={tkUrl} target="_blank" rel="noreferrer">เช็กสถานะ ↗</a>
-              </>
-            )}
+        <h3><span>🚚 ช่างส่งของมาร้าน</span></h3>
+        {hasShipped(job) ? (
+          <p style={{ fontSize: 14, marginBottom: 8 }}>
+            {shipText(job)}
+            {job.tracking_at && <span className="jb-small"> · แจ้งเมื่อ {ddmm(job.tracking_at.slice(0, 10))}</span>}
+            {' '}
+            <TrackLink tk={job.tracking} carrier={job.tracking_carrier} className="jb-link" onCopied={() => say('📋 คัดลอกเลขพัสดุแล้ว ไปวางในเว็บขนส่งได้เลย')} />
           </p>
+        ) : (
+          <p className="jb-muted" style={{ marginBottom: 8 }}>ช่างยังไม่แจ้งส่งของ</p>
         )}
+        <p className="jb-small" style={{ marginBottom: 6 }}>ปกติช่างกรอกเองในลิงก์ช่าง · ร้านกรอก/แก้แทนได้ · อยู่ในใบงานนี้เท่านั้น ไม่ปนออเดอร์ลูกค้า</p>
+        <div className="jb-row">
+          <select value={carrier} onChange={(e) => setCarrier(e.target.value)} style={{ width: 'auto', padding: '9px 8px' }}>
+            <option value="">ขนส่ง</option>
+            {CARRIERS.map((c) => <option key={c}>{c}</option>)}
+          </select>
+          {carrier !== 'มาส่งเอง' && (
+            <input className="jb-grow" style={{ minWidth: 120 }} value={tracking} onChange={(e) => { setTracking(e.target.value); if (!carrier) setCarrier(guessCarrier(e.target.value)) }} placeholder="เลขพัสดุ" />
+          )}
+          <button className="btn btn-rose btn-sm" disabled={!!busy || (tracking === job.tracking && carrier === (job.tracking_carrier || guessCarrier(job.tracking)))} onClick={saveTracking}>บันทึก</button>
+        </div>
       </div>
 
       {/* ---------- รูป ---------- */}
       <div className="jb-card">
         <h3>
-          <span>📷 รูปบรีฟ / รูปงาน</span>
+          <span>📷 รูปอื่นๆ / รูปส่งงานจากช่าง</span>
           <span className="jb-row">
             <select value={fileKind} onChange={(e) => setFileKind(e.target.value)} style={{ width: 'auto', padding: '6px 8px', fontSize: 13 }}>
               <option>รูปงาน</option>
@@ -1178,11 +1354,11 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted }) {
             </label>
           </span>
         </h3>
-        {files.length === 0 ? (
-          <p className="jb-muted">ยังไม่มีรูป</p>
+        {loose.length === 0 ? (
+          <p className="jb-muted">ยังไม่มีรูป (รูป ref ของแต่ละลายอยู่ในการ์ดรายการด้านบน)</p>
         ) : (
           <div className="jb-files">
-            {files.map((f) => (
+            {loose.map((f) => (
               <div key={f.id} className="jb-file">
                 <a href={fileUrl(f.path)} target="_blank" rel="noreferrer" style={{ display: 'contents' }}>
                   {isPdf(f.path) ? <span style={{ fontSize: 30 }}>📄</span> : <img src={fileUrl(f.path)} alt={f.kind} loading="lazy" />}
