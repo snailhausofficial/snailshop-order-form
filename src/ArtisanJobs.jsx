@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { supabase, genOrderCode } from './supabase'
 import { carrierOf, trackUrlOf } from './SnailOrderForm.jsx'
 import NavSwitch from './NavSwitch.jsx'
+import { parseBrief } from './briefParser.js'
 import './jobs.css'
 
 /* =====================================================================
@@ -91,6 +92,7 @@ function jobFlags(job, artisan) {
   const t = jobTotals(job)
   const today = todayIso()
   if (artisan && !artisan.id_card_ok) f.push({ t: 'ยังไม่มีบัตร ปชช.', c: 'rd' })
+  if (artisan && artisan.in_flow === false) f.push({ t: 'ยังไม่มีใน Flow', c: 'am' })
   if (si < 2 && job.due_date && job.due_date < today) f.push({ t: '⏰ เลยกำหนด ' + ddmm(job.due_date), c: 'rd' })
   else if (si < 2 && !job.tracking && job.due_date && job.due_date <= addDays(today, 1)) f.push({ t: '⏰ ใกล้กำหนด · ยังไม่ส่งเลข', c: 'am' })
   if (job.tracking) f.push({ t: '🚚 ' + (carrierOf(job.tracking) || 'มีเลขพัสดุแล้ว'), c: 'tl' })
@@ -323,7 +325,7 @@ function JobList({ jobs, artById, artisans, filter, setFilter, q, setQ, onOpen, 
     .filter((j) => {
       if (!needle) return true
       const a = artById[j.artisan_id]
-      const hay = [a?.name, j.code, j.brief, ...(j.job_items || []).map((i) => i.design)].join(' ').toLowerCase()
+      const hay = [a && artisanHay(a), j.code, j.brief, ...(j.job_items || []).map((i) => i.design)].join(' ').toLowerCase()
       return hay.includes(needle)
     })
     .sort((x, y) => {
@@ -362,7 +364,7 @@ function JobList({ jobs, artById, artisans, filter, setFilter, q, setQ, onOpen, 
         return (
           <button key={j.id} className="jb-job" onClick={() => onOpen(j.id)}>
             <div className="jb-job-top">
-              <span className="jb-name">{a?.name || '(ไม่พบช่าง)'}</span>
+              <span className="jb-name">{artisanShort(a)}</span>
               <span className="tag pk" style={{ marginTop: 2 }}>{j.status}</span>
             </div>
             <div className="jb-muted">
@@ -411,7 +413,7 @@ function ItemsEditor({ rows, setRows, showReceive }) {
             {rows.map((r, i) => (
               <tr key={i}>
                 <td style={{ minWidth: 120 }}>
-                  <input value={r.design} onChange={(e) => upd(i, 'design', e.target.value)} placeholder="ชื่อลาย" />
+                  <input value={r.design} onChange={(e) => upd(i, 'design', e.target.value)} placeholder="ตามรูป" />
                 </td>
                 <td style={{ width: 72 }}>
                   <select value={r.size} onChange={(e) => upd(i, 'size', e.target.value)} style={{ minWidth: 60, padding: '6px 4px' }}>
@@ -458,7 +460,7 @@ function cleanItems(rows, jobId) {
     .map((r, i) => ({
       job_id: jobId,
       sort: i,
-      design: (r.design || '').trim(),
+      design: (r.design || '').trim() || 'ตามรูป', // สั่งแค่แนบรูป = "ตามรูป"
       size: SIZES.includes(r.size) ? r.size : 'M',
       qty: Math.max(0, Number(r.qty) || 0),
       price: r2(r.price),
@@ -467,30 +469,105 @@ function cleanItems(rows, jobId) {
     }))
 }
 
+// ชื่อช่างที่แสดงในเว็บ: "065 บีม · จินห์วรา หนูทองแก้ว"
+export function artisanLabel(a) {
+  if (!a) return '(ไม่พบช่าง)'
+  const nick = a.nickname && a.nickname !== a.name ? a.nickname : ''
+  return [a.code, nick, nick ? '· ' + a.name : a.name].filter(Boolean).join(' ')
+}
+export function artisanShort(a) {
+  if (!a) return '(ไม่พบช่าง)'
+  return a.nickname && a.nickname !== a.name ? `${a.nickname} (${a.name})` : a.name
+}
+const artisanHay = (a) => [a.code, a.name, a.nickname, a.facebook].filter(Boolean).join(' ').toLowerCase()
+export const sortArtisans = (list) =>
+  [...list].sort((x, y) => (x.code || 'zzz').localeCompare(y.code || 'zzz') || (x.name || '').localeCompare(y.name || '', 'th'))
+
 /* =====================================================================
    สร้างใบงานใหม่
    ===================================================================== */
 function NewJob({ artisans, say, onCancel, onCreated }) {
-  const active = artisans.filter((a) => a.active)
-  const [artisanId, setArtisanId] = useState(active[0]?.id ? String(active[0].id) : 'new')
+  const active = sortArtisans(artisans.filter((a) => a.active))
+  const [artisanId, setArtisanId] = useState('')
+  const [findQ, setFindQ] = useState('')
   const [newName, setNewName] = useState('')
+  const [newFb, setNewFb] = useState('')
   const [orderDate, setOrderDate] = useState(todayIso())
   const [dueDate, setDueDate] = useState(addDays(todayIso(), 7))
   const [brief, setBrief] = useState('')
   const [note, setNote] = useState('')
   const [rows, setRows] = useState([emptyItem('S')])
+  const [paste, setPaste] = useState('')
+  const [photos, setPhotos] = useState([]) // [{file, url}]
   const [saving, setSaving] = useState(false)
+
+  useEffect(() => () => photos.forEach((p) => URL.revokeObjectURL(p.url)), []) // eslint-disable-line
+
+  const needle = findQ.trim().toLowerCase()
+  const options = needle ? active.filter((a) => artisanHay(a).includes(needle)) : active
+  const chosen = active.find((a) => String(a.id) === artisanId)
+
+  // ช่องค้นหาเหลือคนเดียว → เลือกให้เลย
+  useEffect(() => {
+    if (needle && options.length === 1) setArtisanId(String(options[0].id))
+  }, [findQ]) // eslint-disable-line
+
+  async function pasteFromClipboard() {
+    try {
+      const t = await navigator.clipboard.readText()
+      if (t && t.trim()) setPaste(t)
+      else say('คลิปบอร์ดว่างอยู่ค่ะ', false)
+    } catch {
+      say('เครื่องนี้ไม่ให้กดวางอัตโนมัติ — กดค้างในช่องแล้วเลือก "วาง" แทนนะคะ', false)
+    }
+  }
+
+  function applyPaste() {
+    if (!paste.trim()) return say('วางข้อความบรีฟก่อนนะคะ', false)
+    const r = parseBrief(paste, active)
+    const got = []
+    if (r.artisanId) {
+      setArtisanId(String(r.artisanId))
+      setFindQ('')
+      got.push('ช่าง')
+    }
+    if (r.dueDate) {
+      setDueDate(r.dueDate)
+      got.push('กำหนดส่ง ' + ddmm(r.dueDate))
+    }
+    if (r.items.length) {
+      setRows(r.items.map((i) => ({ ...emptyItem(i.size), ...i })))
+      got.push(`${r.items.length} รายการ`)
+    }
+    if (r.brief) {
+      setBrief((b) => (b.trim() ? b.trim() + '\n' + r.brief : r.brief))
+      got.push('บรีฟ')
+    }
+    say(got.length ? '✨ กรอกให้แล้ว: ' + got.join(' · ') + ' — เช็กอีกทีก่อนบันทึกนะคะ' : 'อ่านไม่เจอข้อมูล ลองพิมพ์ไซส์+จำนวน เช่น "M 50" ดูค่ะ', got.length > 0)
+  }
+
+  function addPhotos(e) {
+    const list = Array.from(e.target.files || [])
+    e.target.value = ''
+    setPhotos((p) => [...p, ...list.map((file) => ({ file, url: URL.createObjectURL(file) }))])
+  }
+  function removePhoto(i) {
+    setPhotos((p) => {
+      URL.revokeObjectURL(p[i].url)
+      return p.filter((_, k) => k !== i)
+    })
+  }
 
   async function save() {
     const items = cleanItems(rows, 0)
+    if (!artisanId) return say('เลือกช่างก่อนนะคะ', false)
     if (artisanId === 'new' && !newName.trim()) return say('ใส่ชื่อช่างก่อนนะคะ', false)
-    if (!items.length) return say('ใส่รายการอย่างน้อย 1 แถว', false)
-    if (items.some((i) => !i.design)) return say('มีแถวที่ยังไม่ใส่ชื่อลาย', false)
+    if (!items.length) return say('ใส่ไซส์ + จำนวนอย่างน้อย 1 แถว', false)
     setSaving(true)
     try {
       let aid = Number(artisanId)
       if (artisanId === 'new') {
-        const { data, error } = await supabase.from('artisans').insert({ name: newName.trim() }).select().single()
+        const { data, error } = await supabase.from('artisans').insert({ name: newName.trim(), facebook: newFb.trim() }).select().single()
         if (error) throw error
         aid = data.id
       }
@@ -502,7 +579,18 @@ function NewJob({ artisans, say, onCancel, onCreated }) {
       if (error) throw error
       const { error: e2 } = await supabase.from('job_items').insert(cleanItems(rows, job.id))
       if (e2) throw e2
-      say('✅ สร้างใบงานแล้ว')
+      // รูปบรีฟ — อัปหลังได้เลขงานแล้ว (ถ้าบางรูปพัง ใบงานยังอยู่ แนบเพิ่มในหน้าใบงานได้)
+      let failed = 0
+      for (const p of photos) {
+        try {
+          const path = await uploadJobFile(job.code, p.file)
+          const { error: e3 } = await supabase.from('job_files').insert({ job_id: job.id, path, kind: 'บรีฟ', uploaded_by: 'ร้าน' })
+          if (e3) throw e3
+        } catch {
+          failed++
+        }
+      }
+      say(failed ? `✅ สร้างใบงานแล้ว แต่รูปอัปไม่ได้ ${failed} รูป — แนบใหม่ในหน้าใบงานได้` : '✅ สร้างใบงานแล้ว', !failed)
       await onCreated(job.id)
     } catch (e) {
       say('บันทึกไม่สำเร็จ: ' + e.message, false)
@@ -518,16 +606,47 @@ function NewJob({ artisans, say, onCancel, onCreated }) {
         <button className="btn btn-ghost btn-sm" onClick={onCancel}>ยกเลิก</button>
       </h3>
 
+      {/* ---------- วางบรีฟ → กรอกช่องให้ ---------- */}
+      <div className="paste-wrap" style={{ marginBottom: 14 }}>
+        <div className="jb-row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
+          <label style={{ margin: 0 }}>📋 วางข้อความบรีฟ (ไม่บังคับ)</label>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={pasteFromClipboard}>📋 วาง</button>
+        </div>
+        <textarea
+          value={paste}
+          onChange={(e) => setPaste(e.target.value)}
+          style={{ minHeight: 90 }}
+          placeholder={'เช่น\nช่างบีม ลายหินอ่อน S 20 M 30\nลายดอกไม้ 20M 10L\nชุดละ 45 ส่ง 30/10\nแพ็กถุงซิปทีละชุด'}
+        />
+        <button className="btn btn-rose btn-sm" style={{ width: '100%', marginTop: 8 }} onClick={applyPaste}>✨ แยกข้อมูลลงช่องด้านล่าง</button>
+      </div>
+
+      {/* ---------- ช่าง ---------- */}
       <div className="jb-field">
         <label>ช่าง</label>
+        <input value={findQ} onChange={(e) => setFindQ(e.target.value)} placeholder="🔍 ค้นหา รหัส / ชื่อ / ชื่อในใบ / เฟส" style={{ marginBottom: 6 }} />
         <select value={artisanId} onChange={(e) => setArtisanId(e.target.value)}>
-          {active.map((a) => (
-            <option key={a.id} value={a.id}>{a.name}{a.id_card_ok ? '' : ' (ยังไม่มีบัตร ปชช.)'}</option>
+          <option value="">— เลือกช่าง ({options.length}) —</option>
+          {options.map((a) => (
+            <option key={a.id} value={a.id}>
+              {artisanLabel(a)}
+              {a.id_card_ok ? '' : ' ⚠บัตร'}
+            </option>
           ))}
           <option value="new">➕ ช่างใหม่...</option>
         </select>
+        {chosen && (
+          <div style={{ marginTop: 4 }}>
+            {chosen.facebook && <span className="tag gy">FB {chosen.facebook}</span>}
+            {!chosen.id_card_ok && <span className="tag rd">ยังไม่มีบัตร ปชช.</span>}
+            {chosen.in_flow === false && <span className="tag am">ยังไม่มีใน Flow</span>}
+          </div>
+        )}
         {artisanId === 'new' && (
-          <input style={{ marginTop: 8 }} value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="ชื่อช่างใหม่" autoFocus />
+          <div className="jb-2col" style={{ marginTop: 8 }}>
+            <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="ชื่อช่างใหม่" autoFocus />
+            <input value={newFb} onChange={(e) => setNewFb(e.target.value)} placeholder="ชื่อ Facebook (ไม่บังคับ)" />
+          </div>
         )}
       </div>
 
@@ -542,12 +661,35 @@ function NewJob({ artisans, say, onCancel, onCreated }) {
         </div>
       </div>
 
+      {/* ---------- รูปบรีฟ ---------- */}
       <div className="jb-field">
-        <label>บรีฟงาน (ช่างเห็น)</label>
-        <textarea value={brief} onChange={(e) => setBrief(e.target.value)} placeholder="รายละเอียด สี ทรง ความยาว แพ็กแบบไหน ฯลฯ" />
+        <div className="jb-row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
+          <label style={{ margin: 0 }}>📷 รูปบรีฟ / รูป ref (ช่างเห็น)</label>
+          <label className="btn btn-ghost btn-sm jb-upload" style={{ margin: 0 }}>
+            ⬆ แนบรูป
+            <input type="file" accept="image/*,application/pdf" multiple onChange={addPhotos} />
+          </label>
+        </div>
+        {photos.length > 0 ? (
+          <div className="jb-files">
+            {photos.map((p, i) => (
+              <div key={p.url} className="jb-file">
+                {/pdf/.test(p.file.type) ? <span style={{ fontSize: 30 }}>📄</span> : <img src={p.url} alt="บรีฟ" />}
+                <button className="x" title="เอาออก" onClick={() => removePhoto(i)}>✕</button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="jb-small">สั่งตามรูปได้เลย — แนบรูป แล้วใส่แค่ไซส์ + จำนวนด้านล่าง</p>
+        )}
       </div>
 
-      <label>รายการ</label>
+      <div className="jb-field">
+        <label>บรีฟ / หมายเหตุ (ช่างเห็น)</label>
+        <textarea value={brief} onChange={(e) => setBrief(e.target.value)} placeholder="สี ทรง ความยาว แพ็กแบบไหน ฯลฯ" style={{ minHeight: 60 }} />
+      </div>
+
+      <label>รายการ <span className="jb-small" style={{ fontWeight: 400 }}>(ชื่อลายเว้นว่างได้ = "ตามรูป")</span></label>
       <ItemsEditor rows={rows} setRows={setRows} />
 
       <div className="jb-field" style={{ marginTop: 12 }}>
@@ -556,9 +698,8 @@ function NewJob({ artisans, say, onCancel, onCreated }) {
       </div>
 
       <button className="btn btn-rose" style={{ width: '100%' }} onClick={save} disabled={saving}>
-        {saving ? 'กำลังบันทึก...' : '💾 บันทึกใบงาน'}
+        {saving ? (photos.length ? 'กำลังบันทึก + อัปรูป...' : 'กำลังบันทึก...') : '💾 บันทึกใบงาน'}
       </button>
-      <p className="jb-small" style={{ marginTop: 8, textAlign: 'center' }}>บันทึกแล้วแนบรูปบรีฟ / สลิปมัดจำ ได้ในหน้าใบงาน</p>
     </div>
   )
 }
@@ -618,7 +759,7 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted }) {
     const link = `${SITE_URL}/job/${job.code}`
     try {
       await navigator.clipboard.writeText(link)
-      say('📋 คัดลอกลิงก์แล้ว — หน้าช่างจะเปิดได้หลังทำขั้น 2')
+      say('📋 คัดลอกลิงก์ช่างแล้ว — ส่งให้ช่างทาง LINE ได้เลย')
     } catch {
       window.prompt('คัดลอกลิงก์นี้', link)
     }
@@ -641,7 +782,6 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted }) {
   function saveItems() {
     const clean = cleanItems(rows, job.id)
     if (!clean.length) return say('ต้องมีอย่างน้อย 1 แถว', false)
-    if (clean.some((i) => !i.design)) return say('มีแถวที่ยังไม่ใส่ชื่อลาย', false)
     if (!window.confirm('บันทึกรายการที่แก้ใช่ไหมคะ?')) return
     run(
       'items',
@@ -735,7 +875,7 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted }) {
   }
 
   function deleteJob() {
-    const name = artisan?.name || ''
+    const name = artisanShort(artisan)
     if (!window.confirm(`ลบใบงานของ ${name} (${t.qty} ชุด) ทั้งใบ รวมประวัติจ่ายเงิน/เลื่อน/รูป ใช่ไหม?\nลบแล้วกู้คืนไม่ได้`)) return
     setBusy('del')
     ;(async () => {
@@ -762,7 +902,8 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted }) {
       <div className="jb-card">
         <div className="jb-row" style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div className="jb-grow">
-            <div className="jb-name" style={{ fontSize: 20 }}>{artisan?.name || '(ไม่พบช่าง)'}</div>
+            <div className="jb-name" style={{ fontSize: 20 }}>{artisanShort(artisan)}</div>
+            {(artisan?.code || artisan?.facebook) && <div className="jb-small">{[artisan.code && 'รหัส ' + artisan.code, artisan.facebook && 'FB ' + artisan.facebook].filter(Boolean).join(' · ')}</div>}
             <div className="jb-code">{job.code}</div>
           </div>
           <button className="btn btn-ghost btn-sm" onClick={copyLink}>🔗 ลิงก์ช่าง</button>
@@ -1049,6 +1190,8 @@ function ArtisanList({ artisans, jobs, say, refresh, onBack }) {
   const [form, setForm] = useState({})
   const [showInactive, setShowInactive] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [q, setQ] = useState('')
+  const [onlyWarn, setOnlyWarn] = useState('')
 
   const stats = useMemo(() => {
     const s = {}
@@ -1064,7 +1207,7 @@ function ArtisanList({ artisans, jobs, say, refresh, onBack }) {
 
   function open(a) {
     setEditId(a ? a.id : 'new')
-    setForm(a ? { ...a } : { name: '', line_id: '', phone: '', id_card_ok: false, note: '', active: true })
+    setForm(a ? { ...a } : { code: '', name: '', nickname: '', facebook: '', line_id: '', phone: '', id_card_ok: false, in_flow: false, note: '', active: true })
   }
 
   async function save() {
@@ -1072,6 +1215,10 @@ function ArtisanList({ artisans, jobs, say, refresh, onBack }) {
     setSaving(true)
     const row = {
       name: form.name.trim(),
+      code: (form.code || '').trim(),
+      nickname: (form.nickname || '').trim(),
+      facebook: (form.facebook || '').trim(),
+      in_flow: !!form.in_flow,
       line_id: (form.line_id || '').trim(),
       phone: (form.phone || '').trim(),
       id_card_ok: !!form.id_card_ok,
@@ -1094,22 +1241,39 @@ function ArtisanList({ artisans, jobs, say, refresh, onBack }) {
 
   async function remove(a) {
     if (stats[a.id]?.jobs) return say('ช่างคนนี้มีใบงานอยู่ ลบไม่ได้ — ติ๊ก "ไม่ได้รับงานแล้ว" แทนนะคะ', false)
-    if (!window.confirm(`ลบช่าง ${a.name} ใช่ไหม?`)) return
+    if (!window.confirm(`ลบช่าง ${artisanShort(a)} ใช่ไหม?`)) return
     const { error } = await supabase.from('artisans').delete().eq('id', a.id)
     if (error) return say('ลบไม่สำเร็จ: ' + error.message, false)
     setEditId(null)
     await refresh()
   }
 
-  const list = artisans.filter((a) => showInactive || a.active)
+  const needle = q.trim().toLowerCase()
+  const list = sortArtisans(artisans)
+    .filter((a) => showInactive || a.active)
+    .filter((a) => !needle || artisanHay(a).includes(needle))
+    .filter((a) => (onlyWarn === 'card' ? !a.id_card_ok : onlyWarn === 'flow' ? a.in_flow === false : true))
   const noCard = artisans.filter((a) => a.active && !a.id_card_ok).length
+  const noFlow = artisans.filter((a) => a.active && a.in_flow === false).length
 
   const Form = (
     <div style={{ background: 'var(--petal)', borderRadius: 12, padding: 12, marginTop: 8 }}>
       <div className="jb-2col">
         <div className="jb-field">
-          <label>ชื่อ</label>
+          <label>ชื่อจริง</label>
           <input value={form.name || ''} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+        </div>
+        <div className="jb-field">
+          <label>ชื่อในใบ / ชื่อเล่น</label>
+          <input value={form.nickname || ''} onChange={(e) => setForm({ ...form, nickname: e.target.value })} />
+        </div>
+        <div className="jb-field">
+          <label>ชื่อ Facebook</label>
+          <input value={form.facebook || ''} onChange={(e) => setForm({ ...form, facebook: e.target.value })} />
+        </div>
+        <div className="jb-field">
+          <label>รหัสช่าง (AAA ตามชีต)</label>
+          <input inputMode="numeric" value={form.code || ''} onChange={(e) => setForm({ ...form, code: e.target.value.replace(/\D/g, '').slice(0, 3) })} placeholder="เช่น 066" />
         </div>
         <div className="jb-field">
           <label>LINE</label>
@@ -1127,6 +1291,10 @@ function ArtisanList({ artisans, jobs, say, refresh, onBack }) {
       <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontWeight: 400 }}>
         <input type="checkbox" style={{ width: 'auto' }} checked={!!form.id_card_ok} onChange={(e) => setForm({ ...form, id_card_ok: e.target.checked })} />
         ส่งบัตรประชาชนแล้ว
+      </label>
+      <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontWeight: 400 }}>
+        <input type="checkbox" style={{ width: 'auto' }} checked={!!form.in_flow} onChange={(e) => setForm({ ...form, in_flow: e.target.checked })} />
+        มีใน FlowAccount แล้ว
       </label>
       <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontWeight: 400 }}>
         <input type="checkbox" style={{ width: 'auto' }} checked={!form.active} onChange={(e) => setForm({ ...form, active: !e.target.checked })} />
@@ -1148,7 +1316,12 @@ function ArtisanList({ artisans, jobs, say, refresh, onBack }) {
           <span>👩‍🎨 รายชื่อช่าง ({artisans.filter((a) => a.active).length})</span>
           {editId !== 'new' && <button className="btn btn-rose btn-sm" onClick={() => open(null)}>➕ เพิ่มช่าง</button>}
         </h3>
-        {noCard > 0 && <p className="tag rd" style={{ marginBottom: 8 }}>ยังไม่มีบัตร ปชช. {noCard} คน</p>}
+        <div className="jb-chips" style={{ marginTop: 0 }}>
+          <button className={'jb-chip' + (onlyWarn === '' ? ' on' : '')} onClick={() => setOnlyWarn('')}>ทั้งหมด</button>
+          <button className={'jb-chip' + (onlyWarn === 'card' ? ' on' : '')} onClick={() => setOnlyWarn('card')}>ยังไม่มีบัตร {noCard}</button>
+          <button className={'jb-chip' + (onlyWarn === 'flow' ? ' on' : '')} onClick={() => setOnlyWarn('flow')}>ยังไม่มีใน Flow {noFlow}</button>
+        </div>
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="🔍 ค้นหา รหัส / ชื่อ / ชื่อในใบ / เฟส" style={{ marginBottom: 8 }} />
         {editId === 'new' && Form}
 
         {list.map((a) => {
@@ -1156,16 +1329,20 @@ function ArtisanList({ artisans, jobs, say, refresh, onBack }) {
           return (
             <div key={a.id} className="jb-list-line" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
               <div className="jb-row" style={{ justifyContent: 'space-between' }}>
-                <span className="jb-name" style={{ fontSize: 16, opacity: a.active ? 1 : 0.55 }}>{a.name}</span>
+                <span className="jb-name" style={{ fontSize: 16, opacity: a.active ? 1 : 0.55 }}>
+                  {a.code && <span className="jb-code" style={{ marginRight: 6 }}>{a.code}</span>}
+                  {artisanShort(a)}
+                </span>
                 <button className="btn btn-ghost btn-sm" onClick={() => (editId === a.id ? setEditId(null) : open(a))}>แก้</button>
               </div>
               <div className="jb-small">
-                {[a.line_id && 'LINE ' + a.line_id, a.phone].filter(Boolean).join(' · ') || '—'}
+                {[a.facebook && 'FB ' + a.facebook, a.line_id && 'LINE ' + a.line_id, a.phone].filter(Boolean).join(' · ') || '—'}
               </div>
               <div>
                 <button className={'tag ' + (a.id_card_ok ? 'gr' : 'rd')} style={{ border: 'none', cursor: 'pointer' }} onClick={() => toggleCard(a)} title="กดเพื่อสลับ">
                   {a.id_card_ok ? '✓ มีบัตร ปชช.' : 'ยังไม่มีบัตร ปชช.'}
                 </button>
+                {a.in_flow === false && <span className="tag am">ยังไม่มีใน Flow</span>}
                 <span className="tag gy">{s.jobs} ใบงาน · ค้าง {s.open}</span>
                 {s.delays > 0 && <span className="tag am">🔁 เลื่อนรวม {s.delays} ครั้ง</span>}
                 {s.owe > 0 && <span className="tag rd">ค้างจ่าย {baht(s.owe)} ฿</span>}
