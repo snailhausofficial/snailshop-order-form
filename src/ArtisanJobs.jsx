@@ -817,6 +817,9 @@ function NewJob({ artisans, say, onCancel, onCreated }) {
     if (!artisanId) return say('เลือกช่างก่อนนะคะ', false)
     if (artisanId === 'new' && !newName.trim()) return say('ใส่ชื่อช่างก่อนนะคะ', false)
     if (!items.length) return say('ใส่จำนวนอย่างน้อย 1 ไซส์', false)
+    const who = artisanId === 'new' ? newName.trim() + ' (ช่างใหม่)' : artisanShort(chosen)
+    const nQty = items.reduce((s, i) => s + i.qty, 0)
+    if (!window.confirm(`สร้างใบงานให้ ${who}\n${named.length} ลาย · ${nQty} ชุด · ${dueDate ? 'ส่ง ' + ddmm(dueDate) : 'ไม่ได้กำหนดวันส่ง'}\nใช่ไหม?`)) return
     setSaving(true)
     try {
       let aid = Number(artisanId)
@@ -985,7 +988,9 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted, onReceive })
     setCarrier(job.tracking_carrier || guessCarrier(job.tracking))
   }, [job.tracking, job.tracking_carrier])
 
-  async function run(label, fn, okMsg) {
+  // ask = ข้อความยืนยันก่อนบันทึก (กันพลาด)
+  async function run(label, fn, okMsg, ask) {
+    if (ask && !window.confirm(ask)) return
     setBusy(label)
     try {
       await fn()
@@ -1021,7 +1026,7 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted, onReceive })
   function saveItems() {
     const clean = cleanItems(rowsFromGroups(groups), job.id)
     if (!clean.length) return say('ต้องมีอย่างน้อย 1 แถว', false)
-    if (!window.confirm('บันทึกรายการที่แก้ใช่ไหมคะ?')) return
+    if (!window.confirm(`บันทึกรายการที่แก้ใช่ไหมคะ? (รวม ${clean.reduce((s, i) => s + i.qty, 0)} ชุด)`)) return
     run(
       'items',
       async () => {
@@ -1044,7 +1049,7 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted, onReceive })
     const shipped = !!tk || c === 'มาส่งเอง'
     const patch = { tracking: c === 'มาส่งเอง' ? '' : tk, tracking_carrier: shipped ? c : '', tracking_at: shipped ? new Date().toISOString() : null }
     if (shipped && statusIdx(job.status) < 2) patch.status = 'ช่างส่งของแล้ว'
-    run('track', () => updateJob(patch), shipped ? '✅ บันทึกการส่งของแล้ว' : 'ลบเลขพัสดุแล้ว')
+    run('track', () => updateJob(patch), shipped ? '✅ บันทึกการส่งของแล้ว' : 'ลบเลขพัสดุแล้ว', shipped ? `บันทึกการส่งของ: ${c === 'มาส่งเอง' ? 'มาส่งเอง' : (c || '') + ' ' + tk} ใช่ไหม?` : 'ลบข้อมูลเลขพัสดุใช่ไหม?')
   }
 
   // เพิ่มรูป ref ให้ลาย
@@ -1079,7 +1084,8 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted, onReceive })
         setPayFile(null)
         setPayKind('ปิดยอด')
       },
-      '✅ บันทึกการจ่ายเงินแล้ว'
+      '✅ บันทึกการจ่ายเงินแล้ว',
+      `บันทึกการจ่าย ${payKind} ${baht(amt)} ฿ วันที่ ${ddmm(payDate || todayIso())}${payFile ? ' (มีสลิป)' : ''} ใช่ไหม?`
     )
   }
 
@@ -1104,7 +1110,8 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted, onReceive })
         setShowDelay(false)
         setDelayReason('')
       },
-      `✅ บันทึกเลื่อนครั้งที่ ${delays.length + 1} แล้ว`
+      `✅ บันทึกเลื่อนครั้งที่ ${delays.length + 1} แล้ว`,
+      `บันทึกช่างขอเลื่อนครั้งที่ ${delays.length + 1}: ${dueText(job.due_date)} → ${ddmm(delayDate)} ใช่ไหม?`
     )
   }
 
@@ -1191,7 +1198,7 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted, onReceive })
               style={{ width: '100%', padding: '9px 10px' }}
               value={job.status}
               disabled={!!busy}
-              onChange={(e) => run('status', () => updateJob({ status: e.target.value }), 'เปลี่ยนสถานะแล้ว')}
+              onChange={(e) => { const v = e.target.value; run('status', () => updateJob({ status: v }), 'เปลี่ยนสถานะแล้ว', `เปลี่ยนสถานะเป็น "${v}" ใช่ไหม?`) }}
             >
               {JOB_STATUSES.map((s) => <option key={s}>{s}</option>)}
             </select>
@@ -1219,7 +1226,7 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted, onReceive })
               <button
                 className="btn btn-rose btn-sm"
                 disabled={!!busy}
-                onClick={() => run('brief', async () => { await updateJob({ brief: brief.trim() }); setEditBrief(false) }, '✅ บันทึกบรีฟแล้ว')}
+                onClick={() => run('brief', async () => { await updateJob({ brief: brief.trim() }); setEditBrief(false) }, '✅ บันทึกบรีฟแล้ว', 'บันทึกบรีฟที่แก้ใช่ไหม?')}
               >
                 บันทึก
               </button>
@@ -1277,7 +1284,7 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted, onReceive })
         {job.pending_closed && (
           <div className="jb-row" style={{ margin: '6px 0' }}>
             <span className="jb-small jb-grow">ปิดยอดค้างแล้ว{job.pending_close_note ? ' — ' + job.pending_close_note : ''}</span>
-            <button className="btn btn-ghost btn-sm" onClick={() => run('pend', () => updateJob({ pending_closed: false, pending_close_note: '' }), 'เปิดยอดค้างอีกครั้งแล้ว')}>เปิดอีกครั้ง</button>
+            <button className="btn btn-ghost btn-sm" onClick={() => run('pend', () => updateJob({ pending_closed: false, pending_close_note: '' }), 'เปิดยอดค้างอีกครั้งแล้ว', 'เปิดยอดค้างส่งตามอีกครั้งใช่ไหม?')}>เปิดอีกครั้ง</button>
           </div>
         )}
         <button className="btn btn-rose btn-sm" style={{ width: '100%', marginTop: 6 }} onClick={onReceive}>📥 รับ/ตรวจ{receipts.length ? 'รอบใหม่' : 'งานนี้'}</button>
@@ -1290,7 +1297,7 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted, onReceive })
           <select
             value={payTermOf(job)}
             disabled={!!busy}
-            onChange={(e) => run('term', () => updateJob({ pay_term: e.target.value }), 'เปลี่ยนเงื่อนไขจ่ายแล้ว')}
+            onChange={(e) => { const v = e.target.value; run('term', () => updateJob({ pay_term: v }), 'เปลี่ยนเงื่อนไขจ่ายแล้ว', `เปลี่ยนเงื่อนไขจ่ายเป็น "${v}" ใช่ไหม?`) }}
             style={{ width: 'auto', padding: '6px 8px', fontSize: 13 }}
             title="เงื่อนไขจ่าย"
           >
@@ -1458,7 +1465,7 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted, onReceive })
             className="btn btn-rose btn-sm"
             style={{ marginTop: 8 }}
             disabled={!!busy}
-            onClick={() => run('note', () => updateJob({ internal_note: note.trim() }), '✅ บันทึกโน้ตแล้ว')}
+            onClick={() => run('note', () => updateJob({ internal_note: note.trim() }), '✅ บันทึกโน้ตแล้ว', 'บันทึกโน้ตภายในใช่ไหม?')}
           >
             บันทึกโน้ต
           </button>
@@ -1500,6 +1507,7 @@ function ArtisanList({ artisans, jobs, say, refresh, onBack }) {
 
   async function save() {
     if (!(form.name || '').trim()) return say('ใส่ชื่อช่างก่อนนะคะ', false)
+    if (!window.confirm(editId === 'new' ? `เพิ่มช่าง "${form.name.trim()}" ใช่ไหม?` : `บันทึกข้อมูลช่าง "${form.name.trim()}" ที่แก้ใช่ไหม?`)) return
     setSaving(true)
     const row = {
       name: form.name.trim(),
@@ -1522,6 +1530,7 @@ function ArtisanList({ artisans, jobs, say, refresh, onBack }) {
   }
 
   async function toggleCard(a) {
+    if (!window.confirm(`${artisanShort(a)}: เปลี่ยนเป็น "${a.id_card_ok ? 'ยังไม่มีบัตร ปชช.' : 'มีบัตร ปชช. แล้ว'}" ใช่ไหม?`)) return
     const { error } = await supabase.from('artisans').update({ id_card_ok: !a.id_card_ok }).eq('id', a.id)
     if (error) return say('บันทึกไม่สำเร็จ: ' + error.message, false)
     await refresh()
@@ -1631,6 +1640,7 @@ function ArtisanList({ artisans, jobs, say, refresh, onBack }) {
                   {a.id_card_ok ? '✓ มีบัตร ปชช.' : 'ยังไม่มีบัตร ปชช.'}
                 </button>
                 {a.in_flow === false && <span className="tag am">ยังไม่มีใน Flow</span>}
+                {!a.code && <span className="tag gy">ยังไม่มีรหัส — เพิ่มในชีต</span>}
                 <span className="tag gy">{s.jobs} ใบงาน · ค้าง {s.open}</span>
                 {s.delays > 0 && <span className="tag am">🔁 เลื่อนรวม {s.delays} ครั้ง</span>}
                 {s.owe > 0 && <span className="tag rd">ค้างจ่าย {baht(s.owe)} ฿</span>}

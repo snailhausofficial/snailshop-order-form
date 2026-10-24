@@ -190,6 +190,8 @@ export function ReceiveForm({ job, artisan, say, onDone, onCancel }) {
     const fu = Math.min(Number(followup) || 0, totalRecv)
     if ((Number(followup) || 0) > totalRecv) return say(`"ส่งตามมาแล้ว" ต้องไม่เกินจำนวนที่รับรอบนี้ (${totalRecv} ชุด)`, false)
     const cleanIssues = issues.filter((x) => Number(x.qty) > 0 || x.note.trim())
+    const issTxt = cleanIssues.filter((x) => Number(x.qty) > 0).map((x) => `${x.kind} ${x.qty}`).join(' · ')
+    if (!window.confirm(`บันทึกการรับของ ${artisanShort(artisan)}\nวันที่ ${ddmm(date)} · รับ ${totalRecv} ชุด${fu ? ` (ส่งตาม ${fu})` : ''}${issTxt ? '\n' + issTxt : ''}${isNew ? '\n(สร้างใบงานย้อนหลังให้)' : ''}\nใช่ไหม?`)) return
     setSaving(true)
     try {
       const must = ({ error, data }) => {
