@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom'
 import { supabase } from './supabase'
 import { JOB_STATUSES, jobTotals, ddmm, baht, statusIdx, fileUrl, uploadJobFile, DesignCards, looseFiles, dueText, relDue } from './ArtisanJobs.jsx'
 import { CARRIERS, guessCarrier, hasShipped, shipText, TrackLink } from './carriers.jsx'
+import { ReceiptList } from './ArtisanReceive.jsx'
 import './jobs.css'
 
 /* =====================================================================
@@ -114,13 +115,15 @@ export default function ArtisanJob() {
   const j = { ...job, job_items: job.items || [], job_payments: job.payments || [] }
   const t = jobTotals(j)
   const step = statusIdx(job.status)
-  const locked = step >= 3 // ร้านรับของแล้ว
+  const pending = Number(job.pending) || 0
+  const locked = step >= 3 && pending <= 0 // ร้านรับของแล้ว และไม่มีค้างส่งตาม
+  const receipts = job.receipts || []
   const delays = job.delays || []
   const files = job.files || []
   const loose = looseFiles(j.job_items, files)
   const looseBrief = loose.filter((f) => f.uploaded_by !== 'ช่าง' && f.kind === 'บรีฟ')
   const myPhotos = files.filter((f) => f.uploaded_by === 'ช่าง')
-  const otherWork = loose.filter((f) => f.uploaded_by !== 'ช่าง' && f.kind !== 'บรีฟ')
+  const otherWork = loose.filter((f) => f.uploaded_by !== 'ช่าง' && f.kind !== 'บรีฟ' && !f.receipt_id)
 
   return (
     <div className="ord-wrap">
@@ -177,7 +180,7 @@ export default function ArtisanJob() {
         {/* รายการ (การ์ดต่อลาย + รูป ref) */}
         <div className="ord-sec">
           <div className="ord-sec-title">🎨 รายการ</div>
-          <DesignCards items={j.job_items} files={files.filter((f) => f.uploaded_by !== 'ช่าง')} />
+          <DesignCards items={j.job_items} files={files.filter((f) => f.uploaded_by !== 'ช่าง' && !f.receipt_id)} />
           <div className="jb-total"><span>รวม {t.qty} ชุด</span><span>{baht(t.amount)} ฿</span></div>
           {t.anyRecv && (
             <div className="ord-line" style={{ fontSize: 13 }}>
@@ -185,6 +188,19 @@ export default function ArtisanJob() {
             </div>
           )}
         </div>
+
+        {/* ผลตรวจรับ */}
+        {receipts.length > 0 && (
+          <div className="ord-sec">
+            <div className="ord-sec-title">✅ ผลตรวจรับ</div>
+            <ReceiptList receipts={receipts} files={files} />
+            {pending > 0 && (
+              <div className="ord-line" style={{ background: '#FDF0D8', borderRadius: 10, padding: '8px 10px', color: '#7A4A06' }}>
+                🔁 ค้างส่งตาม <b>{pending} ชุด</b> — ส่งแล้วแจ้งเลขพัสดุด้านล่างได้เลยค่ะ
+              </div>
+            )}
+          </div>
+        )}
 
         {/* บรีฟ */}
         {(job.brief || looseBrief.length > 0) && (
@@ -230,10 +246,10 @@ export default function ArtisanJob() {
           )}
 
           {locked ? (
-            <div className="ord-line jb-muted">ร้านรับของแล้ว — แก้ไขไม่ได้แล้วค่ะ</div>
+            <div className="ord-line jb-muted">ร้านรับของครบแล้ว — แก้ไขไม่ได้แล้วค่ะ</div>
           ) : (
             <div style={{ background: 'var(--petal)', borderRadius: 12, padding: 12 }}>
-              <label style={{ marginBottom: 6 }}>{hasShipped(job) ? 'แก้ข้อมูลการส่ง' : 'ส่งของแล้ว? เลือกขนส่ง + ใส่เลขพัสดุ'}</label>
+              <label style={{ marginBottom: 6 }}>{pending > 0 && step >= 3 ? 'ส่งของตาม? เลือกขนส่ง + ใส่เลขพัสดุ' : hasShipped(job) ? 'แก้ข้อมูลการส่ง' : 'ส่งของแล้ว? เลือกขนส่ง + ใส่เลขพัสดุ'}</label>
               <div className="jb-chips" style={{ margin: '0 0 8px' }}>
                 {CARRIERS.map((c) => (
                   <button key={c} type="button" className={'jb-chip' + (carrier === c ? ' on' : '')} onClick={() => setCarrier(c)}>

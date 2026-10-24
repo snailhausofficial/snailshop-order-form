@@ -123,3 +123,32 @@
 .jb-near{border-color:var(--pink);background:#FFF7FA}
 .jb-near-row{display:flex;align-items:center;gap:8px;padding:8px 2px;border-top:1px solid var(--line);cursor:pointer;font-size:14px}
 .jb-near-row:first-of-type{border-top:none}
+
+/* ---------- เมนูบนหน้ารายการ ---------- */
+.jb-menu{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:6px}
+.jb-menu .btn{width:100%;padding:12px 10px}
+
+/* ---------- หัวข้อพับได้ ---------- */
+.jb-sec{background:#fff;border:1px solid var(--line);border-radius:16px;margin-bottom:10px;overflow:hidden}
+.jb-sec.open{border-color:var(--pink)}
+.jb-sec-head{width:100%;display:flex;align-items:center;gap:8px;padding:13px 14px;background:none;border:none;
+  cursor:pointer;font-family:inherit;text-align:left;color:var(--ink)}
+.jb-sec-n{width:24px;height:24px;border-radius:50%;background:#EFEAEC;color:#5E4B55;font-size:13px;
+  display:inline-flex;align-items:center;justify-content:center;flex:none}
+.jb-sec-n.done{background:#E5F4E7;color:#22612E}
+.jb-sec.open .jb-sec-n:not(.done){background:var(--pink-deep);color:#fff}
+.jb-sec-title{font-family:'Itim',sans-serif;font-size:16px;color:var(--pink-deep);flex:1;min-width:0}
+.jb-sec-sum{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:48%}
+.jb-sec-sum.tag{margin:0;color:inherit}
+.jb-sec-caret{color:var(--muted);font-size:13px;flex:none}
+.jb-sec-body{padding:0 14px 14px}
+.jb-sec-body h3{font-family:'Itim',sans-serif;font-weight:400;font-size:15px;color:var(--pink-deep);margin:4px 0 8px;
+  display:flex;justify-content:space-between;align-items:center;gap:8px}
+
+/* ---------- รับ/ตรวจ ---------- */
+.jb-pick{width:100%;display:flex;align-items:center;gap:8px;padding:11px 12px;margin-bottom:6px;border-radius:12px;
+  border:1.5px solid var(--line);background:#fff;cursor:pointer;font-family:inherit;font-size:14px;color:var(--ink)}
+.jb-pick:hover{border-color:var(--pink)}
+.jb-go{font-size:20px;color:var(--pink-deep);line-height:1}
+.jb-issue{border:1px solid var(--line);border-radius:12px;padding:8px;margin-bottom:8px;background:#FFFBFD}
+.jb-receipt{border:1px solid var(--line);border-radius:12px;padding:10px;margin-bottom:8px;background:#FFFBFD;font-size:14px}

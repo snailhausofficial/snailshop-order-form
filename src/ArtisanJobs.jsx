@@ -4,6 +4,7 @@ import { supabase, genOrderCode } from './supabase'
 import { CARRIERS, guessCarrier, hasShipped, shipText, TrackLink } from './carriers.jsx'
 import NavSwitch from './NavSwitch.jsx'
 import { parseBrief } from './briefParser.js'
+import { ReceivePanel, ReceiveForm, DailySummary, Section, ReceiptList, pendingOf } from './ArtisanReceive.jsx'
 import './jobs.css'
 
 /* =====================================================================
@@ -19,7 +20,7 @@ export const PAY_TERMS = ['จ่ายทีหลัง', 'มัดจำก�
 export const payTermOf = (job) => (job.pay_term === 'มัดจำก่อน' ? 'มัดจำก่อน' : 'จ่ายทีหลัง')
 const LOGO = '/logo.png'
 const SITE_URL = import.meta.env.VITE_SITE_URL || 'https://order.snailshop.org'
-const JOB_SELECT = '*, job_items(*), job_payments(*), job_delays(*), job_files(*)'
+const JOB_SELECT = '*, job_items(*), job_payments(*), job_delays(*), job_files(*), job_receipts(*, receipt_issues(*))'
 
 /* ---------- ตัวช่วยวันที่ / เงิน ---------- */
 const pad = (n) => String(n).padStart(2, '0')
@@ -114,6 +115,9 @@ function jobFlags(job, artisan) {
   if (si < 2 && job.due_date && job.due_date < today) f.push({ t: '⏰ เลยกำหนด ' + ddmm(job.due_date), c: 'rd' })
   else if (si < 2 && !hasShipped(job) && job.due_date && job.due_date <= addDays(today, 1)) f.push({ t: '⏰ ' + relDue(job.due_date) + ' · ยังไม่ส่ง', c: 'am' })
   if (hasShipped(job)) f.push({ t: '🚚 ' + (shipText(job) || 'ช่างส่งของแล้ว'), c: 'tl' })
+  const pend = pendingOf(job)
+  if (pend > 0) f.push({ t: `🔁 ค้างส่งตาม ${pend} ชุด`, c: 'am' })
+  if (job.backdated) f.push({ t: 'ไม่มีใบสั่ง (ย้อนหลัง)', c: 'gy' })
   const nd = (job.job_delays || []).length
   if (nd) f.push({ t: `🔁 เลื่อน ${nd} ครั้ง`, c: 'am' })
   // สถานะเงิน
@@ -267,7 +271,43 @@ export default function ArtisanJobs() {
             onOpen={(id) => setView({ name: 'job', id })}
             onNew={() => setView({ name: 'new' })}
             onArtisans={() => setView({ name: 'artisans' })}
+            onReceive={() => setView({ name: 'receive' })}
+            onDaily={() => setView({ name: 'daily' })}
           />
+        )}
+
+        {loaded && view.name === 'receive' && (
+          <ReceivePanel
+            jobs={jobs}
+            artisans={artisans.filter((a) => a.active)}
+            artById={artById}
+            onPickJob={(j) => setView({ name: 'receiveForm', jobId: j.id, back: 'receive' })}
+            onNewFor={(a) => setView({ name: 'receiveForm', artisanId: a.id, back: 'receive' })}
+            onBack={() => setView({ name: 'list' })}
+          />
+        )}
+
+        {loaded && view.name === 'receiveForm' && (() => {
+          const rj = view.jobId ? jobs.find((x) => x.id === view.jobId) : null
+          const ra = rj ? artById[rj.artisan_id] : artById[view.artisanId]
+          if (!ra) return <p className="jb-muted">ไม่พบข้อมูล</p>
+          return (
+            <ReceiveForm
+              key={(view.jobId || 'n') + '-' + (view.artisanId || '')}
+              job={rj}
+              artisan={ra}
+              say={say}
+              onCancel={() => setView(view.back === 'job' && rj ? { name: 'job', id: rj.id } : { name: 'receive' })}
+              onDone={async (id) => {
+                await refreshJob(id)
+                setView({ name: 'job', id })
+              }}
+            />
+          )
+        })()}
+
+        {loaded && view.name === 'daily' && (
+          <DailySummary jobs={jobs} artById={artById} onOpen={(id) => setView({ name: 'job', id })} onBack={() => setView({ name: 'list' })} />
         )}
 
         {loaded && view.name === 'new' && (
@@ -290,6 +330,7 @@ export default function ArtisanJobs() {
             artisan={artById[current.artisan_id]}
             say={say}
             refresh={() => refreshJob(current.id)}
+            onReceive={() => setView({ name: 'receiveForm', jobId: current.id, back: 'job' })}
             onBack={() => setView({ name: 'list' })}
             onDeleted={() => {
               setJobs((prev) => prev.filter((x) => x.id !== current.id))
@@ -325,17 +366,19 @@ const FILTERS = [
   ['open', 'ยังไม่จบ'],
   ['late', 'เลยกำหนด'],
   ['unpaid', 'ยังไม่โอน'],
+  ['pending', 'ค้างส่งตาม'],
   ['topay', 'รอจ่าย'],
   ['done', 'จ่ายเงินแล้ว'],
   ['all', 'ทั้งหมด'],
 ]
 
-function JobList({ jobs, artById, artisans, filter, setFilter, q, setQ, onOpen, onNew, onArtisans }) {
+function JobList({ jobs, artById, artisans, filter, setFilter, q, setQ, onOpen, onNew, onArtisans, onReceive, onDaily }) {
   const today = todayIso()
   const test = {
     open: (j) => j.status !== 'จ่ายเงินแล้ว',
     late: (j) => statusIdx(j.status) < 2 && j.due_date && j.due_date < today,
     unpaid: (j) => j.status !== 'จ่ายเงินแล้ว' && jobTotals(j).paid <= 0,
+    pending: (j) => pendingOf(j) > 0,
     topay: (j) => statusIdx(j.status) >= 2 && j.status !== 'จ่ายเงินแล้ว' && jobTotals(j).balance > 0,
     done: (j) => j.status === 'จ่ายเงินแล้ว',
     all: () => true,
@@ -363,7 +406,8 @@ function JobList({ jobs, artById, artisans, filter, setFilter, q, setQ, onOpen, 
   const near = jobs
     .map((j) => {
       const si = statusIdx(j.status)
-      if (si === 2) return { j, kind: 'coming' }
+      const lastRec = (j.job_receipts || []).reduce((m, r) => (r.created_at > m ? r.created_at : m), '')
+      if (si === 2 || (pendingOf(j) > 0 && j.tracking_at && j.tracking_at > lastRec)) return { j, kind: 'coming' }
       if (si < 2 && j.due_date && j.due_date < today) return { j, kind: 'late' }
       if (si < 2 && j.due_date && j.due_date <= addDays(today, 1)) return { j, kind: 'soon' }
       return null
@@ -373,8 +417,10 @@ function JobList({ jobs, artById, artisans, filter, setFilter, q, setQ, onOpen, 
 
   return (
     <>
-      <div className="jb-row" style={{ marginBottom: 4 }}>
-        <button className="btn btn-rose" style={{ flex: 1 }} onClick={onNew}>➕ สร้างใบงานใหม่</button>
+      <div className="jb-menu">
+        <button className="btn btn-rose" onClick={onNew}>➕ สร้างใบงาน</button>
+        <button className="btn btn-rose" onClick={onReceive}>📥 รับ/ตรวจงาน</button>
+        <button className="btn btn-ghost" onClick={onDaily}>📅 สรุปรายวัน</button>
         <button className="btn btn-ghost" onClick={onArtisans}>👩‍🎨 รายชื่อช่าง ({artisans.length})</button>
       </div>
 
@@ -465,7 +511,7 @@ export function groupItems(items) {
 
 let gid = 0
 const emptySz = () => ({ qty: '', recv: '', dmg: '' })
-const newGroup = (design = '', price = '') => ({ key: ++gid, design, price, S: emptySz(), M: emptySz(), L: emptySz(), photos: [] })
+export const newGroup = (design = '', price = '') => ({ key: ++gid, design, price, S: emptySz(), M: emptySz(), L: emptySz(), photos: [] })
 
 function addSz(g, size, qty, recv, dmg) {
   const cur = g[size] || emptySz()
@@ -495,13 +541,13 @@ function groupsFromParsed(items) {
 }
 
 // ลายที่ไม่ได้ตั้งชื่อ: มีลายเดียว = "ตามรูป" · หลายลาย = "ตามรูป 1", "ตามรูป 2" (รูปจะได้ไม่ปนกัน)
-function nameGroups(groups) {
+export function nameGroups(groups) {
   const blank = groups.filter((g) => !g.design.trim()).length
   let n = 0
   return groups.map((g) => (g.design.trim() ? { ...g, design: g.design.trim() } : { ...g, design: blank > 1 ? `ตามรูป ${++n}` : 'ตามรูป' }))
 }
 
-function rowsFromGroups(groups) {
+export function rowsFromGroups(groups) {
   const rows = []
   for (const g of nameGroups(groups))
     for (const sz of SIZES) {
@@ -514,7 +560,7 @@ function rowsFromGroups(groups) {
 
 const groupQty = (g) => SIZES.reduce((s, z) => s + (Number(g[z].qty) || 0), 0)
 
-function GroupsEditor({ groups, setGroups, showReceive, allowPhotos }) {
+export function GroupsEditor({ groups, setGroups, showReceive, allowPhotos }) {
   const upd = (k, patch) => setGroups(groups.map((g) => (g.key === k ? { ...g, ...patch } : g)))
   const updSz = (k, sz, f, v) => setGroups(groups.map((g) => (g.key === k ? { ...g, [sz]: { ...g[sz], [f]: v } } : g)))
   const del = (k) => {
@@ -666,7 +712,7 @@ export function looseFiles(items, files) {
   return (files || []).filter((f) => !f.design || !names.has(f.design))
 }
 
-function cleanItems(rows, jobId) {
+export function cleanItems(rows, jobId) {
   return rows
     .filter((r) => (r.design || '').trim() || Number(r.qty) > 0)
     .map((r, i) => ({
@@ -691,7 +737,7 @@ export function artisanShort(a) {
   if (!a) return '(ไม่พบช่าง)'
   return a.nickname && a.nickname !== a.name ? `${a.nickname} (${a.name})` : a.name
 }
-const artisanHay = (a) => [a.code, a.name, a.nickname, a.facebook].filter(Boolean).join(' ').toLowerCase()
+export const artisanHay = (a) => [a.code, a.name, a.nickname, a.facebook].filter(Boolean).join(' ').toLowerCase()
 export const sortArtisans = (list) =>
   [...list].sort((x, y) => (x.code || 'zzz').localeCompare(y.code || 'zzz') || (x.name || '').localeCompare(y.name || '', 'th'))
 
@@ -907,7 +953,7 @@ function NewJob({ artisans, say, onCancel, onCreated }) {
 /* =====================================================================
    หน้าใบงาน
    ===================================================================== */
-function JobDetail({ job, artisan, say, refresh, onBack, onDeleted }) {
+function JobDetail({ job, artisan, say, refresh, onBack, onDeleted, onReceive }) {
   const t = jobTotals(job)
   const items = [...(job.job_items || [])].sort((a, b) => a.sort - b.sort || a.id - b.id)
   const delays = [...(job.job_delays || [])].sort((a, b) => a.seq - b.seq)
@@ -1109,7 +1155,17 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted }) {
     })()
   }
 
-  const loose = looseFiles(items, files)
+  const loose = looseFiles(items, files).filter((f) => !f.receipt_id)
+  const pend = pendingOf(job)
+  const receipts = job.job_receipts || []
+  const recvSum = receipts.reduce((s, r) => s + (Number(r.qty_total) || 0), 0)
+  const shipped = hasShipped(job)
+
+  function closePending() {
+    const why = window.prompt(`ปิดยอดค้างส่งตาม ${pend} ชุด — เหตุผล (เช่น ตกลงไม่ต้องส่งแล้ว)`, '')
+    if (why == null) return
+    run('pend', () => updateJob({ pending_closed: true, pending_close_note: why.trim() }), 'ปิดยอดค้างแล้ว')
+  }
 
   return (
     <>
@@ -1152,9 +1208,9 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted }) {
       </div>
 
       {/* ---------- บรีฟ + รายการ ---------- */}
-      <div className="jb-card">
+      <Section icon="🎨" title="รายการ + บรีฟ" summary={`${t.qty} ชุด · ${baht(t.amount)} ฿`} defaultOpen>
         <h3>
-          <span>📝 บรีฟงาน</span>
+          <span>📝 บรีฟ</span>
           {!editBrief ? (
             <button className="btn btn-ghost btn-sm" onClick={() => { setBrief(job.brief); setEditBrief(true) }}>แก้</button>
           ) : (
@@ -1179,7 +1235,7 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted }) {
         <h3 style={{ marginTop: 16 }}>
           <span>🎨 รายการ</span>
           {!editItems ? (
-            <button className="btn btn-ghost btn-sm" onClick={startEditItems}>แก้ / กรอกรับของ</button>
+            <button className="btn btn-ghost btn-sm" onClick={startEditItems}>แก้รายการ</button>
           ) : (
             <span className="jb-row">
               <button className="btn btn-ghost btn-sm" onClick={() => setEditItems(false)}>ยกเลิก</button>
@@ -1201,12 +1257,36 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted }) {
             )}
           </>
         )}
-      </div>
+      </Section>
+
+      {/* ---------- ตรวจรับ ---------- */}
+      <Section
+        icon="✅"
+        title="ตรวจรับ"
+        summary={receipts.length ? `รับแล้ว ${recvSum} ชุด${pend ? ' · ค้าง ' + pend : ''}` : 'ยังไม่ได้รับ'}
+        tone={pend ? 'am' : receipts.length ? 'gr' : ''}
+        defaultOpen={pend > 0 || statusIdx(job.status) === 2}
+      >
+        <ReceiptList receipts={receipts} files={files} showBy />
+        {pend > 0 && (
+          <div className="jb-row" style={{ background: '#FDF0D8', borderRadius: 10, padding: 8, margin: '6px 0' }}>
+            <span className="jb-grow">🔁 ค้างส่งตาม <b style={{ fontWeight: 400, color: '#7A4A06' }}>{pend} ชุด</b></span>
+            <button className="btn btn-ghost btn-sm" disabled={!!busy} onClick={closePending}>ปิดยอดค้าง</button>
+          </div>
+        )}
+        {job.pending_closed && (
+          <div className="jb-row" style={{ margin: '6px 0' }}>
+            <span className="jb-small jb-grow">ปิดยอดค้างแล้ว{job.pending_close_note ? ' — ' + job.pending_close_note : ''}</span>
+            <button className="btn btn-ghost btn-sm" onClick={() => run('pend', () => updateJob({ pending_closed: false, pending_close_note: '' }), 'เปิดยอดค้างอีกครั้งแล้ว')}>เปิดอีกครั้ง</button>
+          </div>
+        )}
+        <button className="btn btn-rose btn-sm" style={{ width: '100%', marginTop: 6 }} onClick={onReceive}>📥 รับ/ตรวจ{receipts.length ? 'รอบใหม่' : 'งานนี้'}</button>
+      </Section>
 
       {/* ---------- จ่ายเงิน ---------- */}
-      <div className="jb-card">
+      <Section icon="💸" title="จ่ายเงินช่าง" summary={t.balance > 0 ? `คงเหลือ ${baht(t.balance)} ฿` : t.amount > 0 ? 'จ่ายครบ' : ''} tone={t.balance > 0 && statusIdx(job.status) >= 3 ? 'rd' : ''}>
         <h3>
-          <span>💸 จ่ายเงินช่าง</span>
+          <span className="jb-small">เงื่อนไขจ่าย</span>
           <select
             value={payTermOf(job)}
             disabled={!!busy}
@@ -1274,12 +1354,12 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted }) {
             </button>
           </div>
         </div>
-      </div>
+      </Section>
 
       {/* ---------- เลื่อนส่ง ---------- */}
-      <div className="jb-card">
+      <Section icon="⏰" title="ช่างขอเลื่อนส่ง" summary={delays.length ? `${delays.length} ครั้ง` : ''} tone={delays.length ? 'am' : ''}>
         <h3>
-          <span>🔁 ช่างขอเลื่อนส่ง {delays.length > 0 && <span className="tag am">{delays.length} ครั้ง</span>}</span>
+          <span />
           {!showDelay && <button className="btn btn-ghost btn-sm" onClick={() => setShowDelay(true)}>➕ บันทึกเลื่อน</button>}
         </h3>
         {delays.length === 0 && !showDelay && <p className="jb-muted">ยังไม่เคยเลื่อน</p>}
@@ -1311,11 +1391,10 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted }) {
             </div>
           </div>
         )}
-      </div>
+      </Section>
 
       {/* ---------- ขนส่งที่ช่างส่งมา ---------- */}
-      <div className="jb-card" style={{ borderColor: 'var(--pink)' }}>
-        <h3><span>🚚 ช่างส่งของมาร้าน</span></h3>
+      <Section icon="🚚" title="ช่างส่งของมาร้าน" summary={shipped ? shipText(job) : 'ยังไม่แจ้ง'} tone={shipped ? 'tl' : ''}>
         {hasShipped(job) ? (
           <p style={{ fontSize: 14, marginBottom: 8 }}>
             {shipText(job)}
@@ -1337,12 +1416,12 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted }) {
           )}
           <button className="btn btn-rose btn-sm" disabled={!!busy || (tracking === job.tracking && carrier === (job.tracking_carrier || guessCarrier(job.tracking)))} onClick={saveTracking}>บันทึก</button>
         </div>
-      </div>
+      </Section>
 
       {/* ---------- รูป ---------- */}
-      <div className="jb-card">
+      <Section icon="📷" title="รูปอื่นๆ / รูปส่งงานจากช่าง" summary={loose.length ? `${loose.length} รูป` : ''}>
         <h3>
-          <span>📷 รูปอื่นๆ / รูปส่งงานจากช่าง</span>
+          <span />
           <span className="jb-row">
             <select value={fileKind} onChange={(e) => setFileKind(e.target.value)} style={{ width: 'auto', padding: '6px 8px', fontSize: 13 }}>
               <option>รูปงาน</option>
@@ -1369,11 +1448,10 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted }) {
             ))}
           </div>
         )}
-      </div>
+      </Section>
 
       {/* ---------- โน้ตภายใน ---------- */}
-      <div className="jb-card">
-        <h3><span>🔒 โน้ตภายใน (ช่างไม่เห็น)</span></h3>
+      <Section icon="🔒" title="โน้ตภายใน (ช่างไม่เห็น)" summary={job.internal_note ? 'มีโน้ต' : ''}>
         <textarea value={note} onChange={(e) => setNote(e.target.value)} style={{ minHeight: 60 }} />
         {note !== job.internal_note && (
           <button
@@ -1385,7 +1463,7 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted }) {
             บันทึกโน้ต
           </button>
         )}
-      </div>
+      </Section>
 
       <button className="btn btn-danger btn-sm" onClick={deleteJob} disabled={!!busy}>🗑 ลบใบงานนี้</button>
     </>
