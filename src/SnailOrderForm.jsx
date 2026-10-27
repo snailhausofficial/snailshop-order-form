@@ -391,6 +391,33 @@ export function matchSearch(o, q) {
   return hay.includes(t) || hay.replace(/\s/g, '').includes(t.replace(/\s/g, ''))
 }
 
+// ===== สมุดบันทึก / ถังขยะ =====
+const LOG_TABLE = 'order_log'
+const LOG_FIELD_LABELS = {
+  tiktok: 'ชื่อ TikTok', qty: 'จำนวน', note: 'หมายเหตุ', send_date: 'วันส่ง', name: 'ชื่อจริง', addr: 'ที่อยู่',
+  phone: 'เบอร์', tracking: 'เลขพัสดุ', status: 'สถานะ', type: 'แบบ', code: 'เลขออเดอร์',
+}
+const LOG_ACTION_LABELS = { insert: '➕ สร้างออเดอร์', update: '✏️ แก้ไข', delete: '🗑️ ลบ', restore: '♻️ กู้คืน' }
+export function fmtWhen(at) {
+  const d = new Date(at)
+  if (isNaN(d)) return '-'
+  const p = (n) => String(n).padStart(2, '0')
+  return `${p(d.getDate())}/${p(d.getMonth() + 1)} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+export function fmtMB(bytes) {
+  return (bytes / 1024 / 1024).toLocaleString(undefined, { maximumFractionDigits: 1 }) + ' MB'
+}
+// รวมแถวที่ถูกลบพร้อมกัน (ล้างรอบ = เวลาเดียวกันเป๊ะ + คนเดียวกัน) เป็นกลุ่ม
+export function groupTrash(rows) {
+  const groups = []
+  rows.forEach((r) => {
+    const g = groups[groups.length - 1]
+    if (g && g.at === r.at && g.actor === r.actor_email) g.rows.push(r)
+    else groups.push({ at: r.at, actor: r.actor_email, rows: [r] })
+  })
+  return groups
+}
+
 const SORT_DEFAULT_DIR = { created: 'desc', qty: 'desc', tiktok: 'asc', status: 'asc' }
 
 export default function SnailOrderForm() {
@@ -409,6 +436,9 @@ export default function SnailOrderForm() {
   const [sort, setSort] = useState({ key: 'created', dir: 'desc' }) // ลูกศรหัวตาราง (ใบปะหน้าไม่ตาม)
   const [historyOf, setHistoryOf] = useState(null) // 👤 ประวัติลูกค้า
   const [ownerModal, setOwnerModal] = useState(null) // 🔒 รหัสเจ้าของก่อนล้างรอบ
+  const [trash, setTrash] = useState(null) // 🗑️ ถังขยะ: null = ปิด · { loading, groups, size, err }
+  const [restoring, setRestoring] = useState(false)
+  const [editLog, setEditLog] = useState(null) // 📝 ประวัติการแก้ของออเดอร์
   const [ownerPw, setOwnerPw] = useState('')
   const [ownerMsg, setOwnerMsg] = useState('')
   const [ownerBusy, setOwnerBusy] = useState(false)
@@ -545,21 +575,83 @@ export default function SnailOrderForm() {
     note: o.note,
   })
 
+  async function loadOrders(pickLatest) {
+    const { data, error } = await supabase.from(TABLE).select('*').order('created_at', { ascending: true })
+    if (error) {
+      setFlash({ msg: 'โหลดข้อมูลจากฐานข้อมูลไม่ได้: ' + error.message, ok: false })
+      return
+    }
+    const rows = (data || []).map(fromRow)
+    setOrders(rows)
+    // ค่าเริ่มต้น: เลือกรอบส่งล่าสุด (จะได้ไม่ปนวันอื่น)
+    const latest = rows.length ? rows[rows.length - 1].date : ''
+    if (pickLatest && latest) setFilterDate(latest)
+  }
   useEffect(() => {
     if (!online || !unlocked) return
-    ;(async () => {
-      const { data, error } = await supabase.from(TABLE).select('*').order('created_at', { ascending: true })
-      if (error) {
-        setFlash({ msg: 'โหลดข้อมูลจากฐานข้อมูลไม่ได้: ' + error.message, ok: false })
-        return
-      }
-      const rows = (data || []).map(fromRow)
-      setOrders(rows)
-      // ค่าเริ่มต้น: เลือกรอบส่งล่าสุด (จะได้ไม่ปนวันอื่น)
-      const latest = rows.length ? rows[rows.length - 1].date : ''
-      if (latest) setFilterDate(latest)
-    })()
+    loadOrders(true)
   }, [online, unlocked])
+
+  // ===== 🗑️ ถังขยะ: ออเดอร์ที่ถูกลบ (ยังไม่กู้) =====
+  async function openTrash() {
+    if (!online) {
+      setFlash({ msg: 'ถังขยะใช้ได้เมื่อต่อฐานข้อมูลแล้วค่ะ', ok: false })
+      return
+    }
+    setTrash({ loading: true, groups: [], size: null, err: '' })
+    const [{ data, error }, sz] = await Promise.all([
+      supabase
+        .from(LOG_TABLE)
+        .select('id,at,actor_email,order_id,code,send_date,before')
+        .eq('action', 'delete')
+        .is('restored_at', null)
+        .order('at', { ascending: false })
+        .order('id', { ascending: true })
+        .limit(500),
+      supabase.rpc('order_log_size'),
+    ])
+    if (error) {
+      setTrash({ loading: false, groups: [], size: null, err: 'เปิดถังขยะไม่ได้: ' + error.message + ' (รัน SQL สมุดบันทึกใน Supabase แล้วหรือยัง?)' })
+      return
+    }
+    setTrash({ loading: false, groups: groupTrash(data || []), size: sz?.data || null, err: '' })
+  }
+  async function restoreLogs(ids) {
+    if (!ids.length) return
+    if (!confirm(`กู้คืน ${ids.length} ออเดอร์?`)) return
+    setRestoring(true)
+    const { data, error } = await supabase.rpc('restore_orders', { p_log_ids: ids })
+    setRestoring(false)
+    if (error) {
+      alert('กู้ไม่สำเร็จ: ' + error.message)
+      return
+    }
+    await loadOrders(false)
+    setFlash({ msg: `♻️ กู้คืนแล้ว ${data ?? ids.length} ออเดอร์`, ok: true })
+    openTrash()
+  }
+
+  // ===== 📝 ประวัติการแก้ของออเดอร์ (ดูอย่างเดียว) =====
+  async function openEditLog(o) {
+    if (!online) {
+      setFlash({ msg: 'ประวัติการแก้ใช้ได้เมื่อต่อฐานข้อมูลแล้วค่ะ', ok: false })
+      return
+    }
+    const who = o.tiktok || o.name || '-'
+    setEditLog({ who, loading: true, rows: [], err: '' })
+    const { data, error } = await supabase
+      .from(LOG_TABLE)
+      .select('id,at,actor_email,action,before,after')
+      .eq('order_id', String(o.id))
+      .order('at', { ascending: false })
+      .order('id', { ascending: false })
+      .limit(200)
+    if (error) {
+      setEditLog({ who, loading: false, rows: [], err: 'โหลดไม่ได้: ' + error.message + ' (รัน SQL สมุดบันทึกใน Supabase แล้วหรือยัง?)' })
+      return
+    }
+    setEditLog({ who, loading: false, rows: data || [], err: '' })
+  }
 
   async function saveOrders(list) {
     if (!online) {
@@ -1086,6 +1178,7 @@ export default function SnailOrderForm() {
               <button className="btn btn-ghost btn-sm" disabled={!isRound} title={isRound ? '' : 'ใช้ได้ทีละรอบ — เลือกรอบส่งก่อน'} onClick={() => setShowTrack((v) => !v)}>📦 ใส่เลขพัสดุ</button>
               <button className="btn btn-ghost btn-sm" onClick={printLabels}>🖨️ ปริ้นใบปะหน้า</button>
               <button className="btn btn-ghost btn-sm" disabled={!isRound} title={isRound ? 'ต้องใส่รหัสเจ้าของ' : 'ใช้ได้ทีละรอบ — เลือกรอบส่งก่อน'} onClick={clearRound}>🗑️ ล้างรอบนี้ 🔒</button>
+              <button className="btn btn-ghost btn-sm" onClick={openTrash} title="ออเดอร์ที่ถูกลบ — กู้คืนได้">♻️ ถังขยะ</button>
             </div>
           </div>
 
@@ -1210,7 +1303,10 @@ export default function SnailOrderForm() {
                             🚚 {carrierOf(o.tracking)} · เช็กสถานะ ↗
                           </a>
                         )}
-                        <button type="button" className="hist-link" onClick={() => setHistoryOf(historyFor(o))} title="ดูประวัติการสั่ง (นับจากเบอร์)">👤 ประวัติ</button>
+                        <div className="row-links">
+                          <button type="button" className="hist-link" onClick={() => setHistoryOf(historyFor(o))} title="ดูประวัติการสั่ง (นับจากเบอร์)">👤 ประวัติ</button>
+                          <button type="button" className="hist-link" onClick={() => openEditLog(o)} title="ใครแก้อะไร เมื่อไหร่">📝 การแก้</button>
+                        </div>
                         {warns.length > 0 && (
                           <div className="warn-tags">
                             {warns.map((w) => (
@@ -1340,7 +1436,7 @@ export default function SnailOrderForm() {
           <div className="modal-card" onClick={(e) => e.stopPropagation()}>
             <div className="modal-title">🔒 ล้างรอบส่ง {ownerModal.label}</div>
             <p style={{ fontSize: 14, marginBottom: 12 }}>
-              จะลบออเดอร์ <b>{ownerModal.ids.length} รายการ</b> แบบถาวร (กู้คืนไม่ได้)
+              จะลบออเดอร์ <b>{ownerModal.ids.length} รายการ</b> (กู้คืนได้จาก ♻️ ถังขยะ)
               <br />ต้องใส่<b>รหัสผ่านของเจ้าของ</b>ก่อนนะคะ
             </p>
             <input
@@ -1358,6 +1454,87 @@ export default function SnailOrderForm() {
               {ownerBusy ? 'กำลังตรวจรหัส...' : `🗑️ ลบ ${ownerModal.ids.length} รายการ`}
             </button>
             <p className="mini-clear" style={{ marginTop: 12 }} onClick={() => !ownerBusy && setOwnerModal(null)}>ยกเลิก</p>
+          </div>
+        </div>
+      )}
+      {/* ===== POPUP ถังขยะ ===== */}
+      {trash && (
+        <div className="modal-bg no-print" onClick={() => !restoring && setTrash(null)}>
+          <div className="modal-card modal-wide" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-title">♻️ ถังขยะ — ออเดอร์ที่ถูกลบ</div>
+            {trash.loading && <p>กำลังโหลด...</p>}
+            {trash.err && <p style={{ color: 'var(--pink-deep)', fontSize: 14 }}>{trash.err}</p>}
+            {!trash.loading && !trash.err && trash.groups.length === 0 && <p style={{ color: 'var(--muted)' }}>ถังขยะว่าง — ไม่มีออเดอร์ที่ถูกลบค่ะ</p>}
+            <div className="trash-list">
+              {trash.groups.map((g) => (
+                <div key={g.at + g.rows[0].id} className="trash-group">
+                  <div className="trash-head">
+                    <span>
+                      {g.rows.length > 1 ? (
+                        <b>ลบพร้อมกัน {g.rows.length} ออเดอร์{g.rows[0].send_date ? ` (รอบ ${g.rows[0].send_date})` : ''}</b>
+                      ) : (
+                        <b>ลบ 1 ออเดอร์</b>
+                      )}
+                      <span className="trash-meta"> · {fmtWhen(g.at)} · โดย {g.actor || 'ไม่ทราบ'}</span>
+                    </span>
+                    <button className="btn btn-primary btn-sm" style={{ width: 'auto' }} disabled={restoring} onClick={() => restoreLogs(g.rows.map((r) => r.id))}>
+                      {g.rows.length > 1 ? `กู้ทั้งหมด (${g.rows.length})` : 'กู้คืน'}
+                    </button>
+                  </div>
+                  {g.rows.map((r) => {
+                    const b = r.before || {}
+                    return (
+                      <div key={r.id} className="trash-row">
+                        <span>
+                          {b.send_date || 'ฝาก'} · <b>{b.tiktok || '-'}</b> · {b.qty} ชุด{b.note && b.note !== '-' ? ` + ${b.note}` : ''} · {b.name || '-'}
+                        </span>
+                        {g.rows.length > 1 && (
+                          <button className="hist-link" disabled={restoring} onClick={() => restoreLogs([r.id])}>กู้อันนี้</button>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              ))}
+            </div>
+            {trash.size && (
+              <div className={'log-size' + (trash.size.db_bytes > 400 * 1024 * 1024 ? ' danger' : '')}>
+                สมุดบันทึกใช้ {fmtMB(trash.size.log_bytes)} ({Number(trash.size.rows).toLocaleString()} บรรทัด) · ฐานข้อมูลรวม {fmtMB(trash.size.db_bytes)} / 500 MB
+                {trash.size.db_bytes > 400 * 1024 * 1024 && ' ⚠️ ใกล้เต็มแล้ว'}
+              </div>
+            )}
+            <p className="mini-clear" style={{ marginTop: 12 }} onClick={() => !restoring && setTrash(null)}>ปิด</p>
+          </div>
+        </div>
+      )}
+      {/* ===== POPUP ประวัติการแก้ ===== */}
+      {editLog && (
+        <div className="modal-bg no-print" onClick={() => setEditLog(null)}>
+          <div className="modal-card modal-wide" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-title">📝 การแก้ไข — {editLog.who}</div>
+            {editLog.loading && <p>กำลังโหลด...</p>}
+            {editLog.err && <p style={{ color: 'var(--pink-deep)', fontSize: 14 }}>{editLog.err}</p>}
+            {!editLog.loading && !editLog.err && editLog.rows.length === 0 && (
+              <p style={{ color: 'var(--muted)', fontSize: 14 }}>ยังไม่มีบันทึก — ระบบเริ่มจดตั้งแต่วันที่ติดตั้งสมุดบันทึก</p>
+            )}
+            <div className="trash-list">
+              {editLog.rows.map((r) => (
+                <div key={r.id} className="log-row">
+                  <div className="trash-meta">
+                    {fmtWhen(r.at)} · {r.actor_email || 'ไม่ทราบ'} · <b>{LOG_ACTION_LABELS[r.action] || r.action}</b>
+                  </div>
+                  {r.action === 'update' &&
+                    Object.keys(r.after || {})
+                      .filter((k) => LOG_FIELD_LABELS[k])
+                      .map((k) => (
+                        <div key={k} className="log-change">
+                          {LOG_FIELD_LABELS[k]}: <span className="log-old">{String(r.before?.[k] ?? '—') || '—'}</span> → <span className="log-new">{String(r.after[k] ?? '—') || '—'}</span>
+                        </div>
+                      ))}
+                </div>
+              ))}
+            </div>
+            <p className="mini-clear" style={{ marginTop: 12 }} onClick={() => setEditLog(null)}>ปิด</p>
           </div>
         </div>
       )}

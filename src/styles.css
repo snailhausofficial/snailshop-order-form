@@ -327,3 +327,18 @@ tbody tr.row-warn:hover{background:#FFEFA8}
 .toolbar .btn-primary{width:auto}
 td .status-select{min-width:96px}
 td.acc{min-width:150px}
+
+/* ---------- ถังขยะ + ประวัติการแก้ ---------- */
+.row-links{display:flex;gap:2px;flex-wrap:wrap}
+.trash-list{max-height:420px;overflow-y:auto;display:flex;flex-direction:column;gap:10px}
+.trash-group{border:1px solid var(--line);border-radius:12px;padding:10px 12px;background:var(--row)}
+.trash-head{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;font-size:14px;margin-bottom:4px}
+.trash-meta{font-size:12px;color:var(--muted);font-weight:400}
+.trash-row{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:13px;
+  padding:4px 0;border-top:1px dashed var(--line)}
+.log-row{border-bottom:1px solid var(--line);padding:6px 0}
+.log-change{font-size:13px;margin-top:2px}
+.log-old{color:var(--muted);text-decoration:line-through}
+.log-new{color:var(--pink-deep);font-weight:600}
+.log-size{margin-top:12px;font-size:12px;color:var(--muted);text-align:center}
+.log-size.danger{color:#C0261B;font-weight:700}
