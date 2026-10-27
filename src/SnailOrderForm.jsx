@@ -618,7 +618,7 @@ export default function SnailOrderForm() {
   }
   async function restoreLogs(ids) {
     if (!ids.length) return
-    if (!confirm(`กู้คืน ${ids.length} ออเดอร์?`)) return
+    if (!confirm(`กู้คืน ${ids.length} ออเดอร์? (กลับไปอยู่ในรอบเดิม ลิงก์เดิม)`)) return
     setRestoring(true)
     const { data, error } = await supabase.rpc('restore_orders', { p_log_ids: ids })
     setRestoring(false)
@@ -628,6 +628,21 @@ export default function SnailOrderForm() {
     }
     await loadOrders(false)
     setFlash({ msg: `♻️ กู้คืนแล้ว ${data ?? ids.length} ออเดอร์`, ok: true })
+    openTrash()
+  }
+
+  // ลบถาวร (กู้ไม่ได้อีก) — ลบบันทึกทั้งหมดของออเดอร์นั้นออกจากสมุด เพื่อคืนพื้นที่
+  async function purgeLogs(ids) {
+    if (!ids.length) return
+    if (!confirm(`ลบถาวร ${ids.length} ออเดอร์?\nกู้คืนไม่ได้อีกนะคะ (ประวัติการแก้ของออเดอร์เหล่านี้จะหายไปด้วย)`)) return
+    setRestoring(true)
+    const { data, error } = await supabase.rpc('purge_trash', { p_log_ids: ids })
+    setRestoring(false)
+    if (error) {
+      alert('ลบถาวรไม่สำเร็จ: ' + error.message + (/purge_trash/.test(error.message) ? '\n(รัน SQL ลบถาวรใน Supabase แล้วหรือยัง?)' : ''))
+      return
+    }
+    setFlash({ msg: `🔥 ลบถาวรแล้ว ${data ?? ids.length} ออเดอร์`, ok: true })
     openTrash()
   }
 
@@ -1465,6 +1480,16 @@ export default function SnailOrderForm() {
             {trash.loading && <p>กำลังโหลด...</p>}
             {trash.err && <p style={{ color: 'var(--pink-deep)', fontSize: 14 }}>{trash.err}</p>}
             {!trash.loading && !trash.err && trash.groups.length === 0 && <p style={{ color: 'var(--muted)' }}>ถังขยะว่าง — ไม่มีออเดอร์ที่ถูกลบค่ะ</p>}
+            {trash.groups.length > 0 && (() => {
+              const allIds = trash.groups.flatMap((g) => g.rows.map((r) => r.id))
+              return (
+                <div className="trash-all">
+                  <span>ทั้งหมด {allIds.length} ออเดอร์</span>
+                  <button className="btn btn-primary btn-sm" style={{ width: 'auto' }} disabled={restoring} onClick={() => restoreLogs(allIds)}>♻️ กู้ทั้งหมด ({allIds.length})</button>
+                  <button className="btn btn-danger btn-sm" disabled={restoring} onClick={() => purgeLogs(allIds)}>🔥 ลบถาวรทั้งหมด ({allIds.length})</button>
+                </div>
+              )
+            })()}
             <div className="trash-list">
               {trash.groups.map((g) => (
                 <div key={g.at + g.rows[0].id} className="trash-group">
@@ -1477,9 +1502,14 @@ export default function SnailOrderForm() {
                       )}
                       <span className="trash-meta"> · {fmtWhen(g.at)} · โดย {g.actor || 'ไม่ทราบ'}</span>
                     </span>
-                    <button className="btn btn-primary btn-sm" style={{ width: 'auto' }} disabled={restoring} onClick={() => restoreLogs(g.rows.map((r) => r.id))}>
-                      {g.rows.length > 1 ? `กู้ทั้งหมด (${g.rows.length})` : 'กู้คืน'}
-                    </button>
+                    <span className="trash-btns">
+                      <button className="btn btn-primary btn-sm" style={{ width: 'auto' }} disabled={restoring} onClick={() => restoreLogs(g.rows.map((r) => r.id))}>
+                        {g.rows.length > 1 ? `กู้ทั้งกลุ่ม (${g.rows.length})` : 'กู้คืน'}
+                      </button>
+                      <button className="btn btn-danger btn-sm" disabled={restoring} onClick={() => purgeLogs(g.rows.map((r) => r.id))}>
+                        {g.rows.length > 1 ? `ลบถาวรทั้งกลุ่ม` : 'ลบถาวร'}
+                      </button>
+                    </span>
                   </div>
                   {g.rows.map((r) => {
                     const b = r.before || {}
@@ -1489,7 +1519,10 @@ export default function SnailOrderForm() {
                           {b.send_date || 'ฝาก'} · <b>{b.tiktok || '-'}</b> · {b.qty} ชุด{b.note && b.note !== '-' ? ` + ${b.note}` : ''} · {b.name || '-'}
                         </span>
                         {g.rows.length > 1 && (
-                          <button className="hist-link" disabled={restoring} onClick={() => restoreLogs([r.id])}>กู้อันนี้</button>
+                          <span className="trash-btns">
+                            <button className="hist-link" disabled={restoring} onClick={() => restoreLogs([r.id])}>กู้อันนี้</button>
+                            <button className="hist-link danger" disabled={restoring} onClick={() => purgeLogs([r.id])}>ลบถาวร</button>
+                          </span>
                         )}
                       </div>
                     )

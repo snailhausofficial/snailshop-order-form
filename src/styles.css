@@ -342,3 +342,9 @@ td.acc{min-width:150px}
 .log-new{color:var(--pink-deep);font-weight:600}
 .log-size{margin-top:12px;font-size:12px;color:var(--muted);text-align:center}
 .log-size.danger{color:#C0261B;font-weight:700}
+.trash-all{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;font-size:14px;color:var(--plum)}
+.trash-all span{margin-right:auto}
+.trash-btns{display:inline-flex;gap:6px;align-items:center}
+.btn-danger{background:#fff;color:#C0261B;border:1.5px solid #F2B8B2;width:auto}
+.btn-danger:hover{background:#C0261B;color:#fff}
+.hist-link.danger{color:#C0261B}
