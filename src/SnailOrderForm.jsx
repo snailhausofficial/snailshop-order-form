@@ -23,6 +23,93 @@ function stripPhones(s) {
   })
 }
 
+// วันที่ส่ง → DD/MM เสมอ (1/11 กับ 01/11 = รอบเดียวกัน)
+export function normDate(d) {
+  const m = String(d || '').match(/^\s*(\d{1,2})\s*\/\s*(\d{1,2})\s*$/)
+  return m ? m[1].padStart(2, '0') + '/' + m[2].padStart(2, '0') : String(d || '').trim()
+}
+
+// เรียงรอบส่ง ใหม่สุดขึ้นก่อน + แบ่งตามเดือน (เดาปีจากวันนี้ — ช่วงข้ามปี 05/01 อยู่เหนือ 28/12)
+const TH_MONTHS = ['มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน', 'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม']
+export function groupRounds(dates, today = new Date()) {
+  const ty = today.getFullYear()
+  const items = dates.map((d) => {
+    const m = d.match(/^(\d{2})\/(\d{2})$/)
+    if (!m) return { d, t: -Infinity, key: 'other', label: 'อื่นๆ' }
+    const day = +m[1], mon = +m[2] - 1
+    let y = ty
+    const diff = mon - today.getMonth()
+    if (diff > 2) y = ty - 1 // เดือนที่ "ล่วงหน้าเกิน 2 เดือน" = ของปีที่แล้ว
+    else if (diff < -9) y = ty + 1 // ธ.ค. มองไป ม.ค. = ปีหน้า
+    const label = TH_MONTHS[mon] + (y !== ty ? ' ' + (y + 543) : '')
+    return { d, t: new Date(y, mon, day).getTime(), key: y + '-' + mon, label }
+  })
+  items.sort((a, b) => b.t - a.t)
+  const groups = []
+  items.forEach((it) => {
+    const g = groups[groups.length - 1]
+    if (g && g.key === it.key) g.dates.push(it.d)
+    else groups.push({ key: it.key, label: it.label, dates: [it.d] })
+  })
+  return groups
+}
+
+// คำนำหน้าชื่อ (นับรวมกับชื่อ ไม่นับเป็นคำของชื่อ)
+const NAME_PREFIX = /^(นาย|นางสาว|นาง|น\.ส\.?|คุณ|ด\.ช\.?|ด\.ญ\.?|เด็กชาย|เด็กหญิง|Mr\.?|Mrs\.?|Ms\.?|Miss)$/i
+const POSTCODE = /(?<!\d)\d{5}(?!\d)/g
+
+// เอาคำต้นๆ เป็นชื่อ (คำนำหน้า + ชื่อ + นามสกุล) ที่เหลือคืนกลับ
+function takeName(str) {
+  const w = str.trim().split(/\s+/).filter(Boolean)
+  let i = 0
+  while (i < w.length && NAME_PREFIX.test(w[i].replace(/[:：]/g, ''))) i++
+  const end = Math.min(w.length, i + 2)
+  return [w.slice(0, end).join(' '), w.slice(end).join(' ')]
+}
+
+// แยกชื่อ/ที่อยู่ เมื่อไม่มีป้าย "ที่อยู่"
+// 1) ชื่ออยู่หน้า ตามด้วยคำบอกที่อยู่ (เลขที่/หมู่/ซอย/ต./อ./จ. ...)
+//    — ถ้าข้างหน้ามีแต่ตัวเลข = บ้านเลขที่ ไม่ใช่ชื่อ (เช่น "50 ซอยรามอินทรา...")
+// 2) ชื่ออยู่ท้ายสุด หลังรหัสไปรษณีย์ เช่น "... 74120 พีรยา สาธรณ์"
+// 3) ไม่มีคำบอกที่อยู่เลย แต่มีรหัสไปรษณีย์ → 2 คำแรก = ชื่อ ที่เหลือ = ที่อยู่
+function splitNameAddr(clean, ADDR_KW) {
+  const text = clean.replace(/\s{2,}/g, ' ').trim()
+  const pcs = [...text.matchAll(POSTCODE)]
+  const lastPc = pcs[pcs.length - 1]
+  const akw = text.match(ADDR_KW)
+  const kwAt = akw ? text.indexOf(akw[0]) : -1
+  let name = ''
+  let addr = ''
+  if (kwAt >= 0) {
+    name = text.slice(0, kwAt)
+    addr = text.slice(kwAt)
+    if (!/[ก-๙a-zA-Z]/.test(name)) {
+      addr = text // ข้างหน้ามีแต่ตัวเลข/เครื่องหมาย = บ้านเลขที่
+      name = ''
+    }
+  } else if (lastPc) {
+    ;[name, addr] = takeName(text)
+  } else return [text, '']
+
+  // ไม่มีชื่อข้างหน้า → ดูว่ามีชื่อต่อท้ายรหัสไปรษณีย์ไหม
+  if (!name.replace(/ชื่อ|ผู้รับ|[:：,]/g, '').trim() && lastPc) {
+    const pcEnd = addr.lastIndexOf(lastPc[0]) + lastPc[0].length
+    const tail = addr.slice(pcEnd).replace(/^[\s,.]+/, '')
+    if (/[ก-๙a-zA-Z]{2,}/.test(tail)) {
+      name = tail
+      addr = addr.slice(0, pcEnd)
+    }
+  }
+  // ชื่อยาวเกิน (มีที่อยู่ปนมา) → ตัดเหลือชื่อ+นามสกุล ที่เหลือย้ายไปหน้าที่อยู่
+  const nm = name.replace(/ชื่อ|ผู้รับ|[:：]/g, ' ').trim()
+  const [n2, rest] = takeName(nm)
+  if (rest && lastPc) {
+    name = n2
+    addr = rest + ' ' + addr
+  }
+  return [name, addr]
+}
+
 export function parseMessage(raw) {
   const text = raw.replace(/\r/g, '')
   const lines = text.split('\n').map((l) => l.trim())
@@ -36,13 +123,17 @@ export function parseMessage(raw) {
   let statusLine = lines.find((l) => /ชุด/.test(l)) || lines.find((l) => /สถานะ|จำนวน/.test(l)) || ''
   let qm = statusLine.match(/(\d+)\s*ชุด/) || statusLine.match(/(\d+)/)
   if (qm) o.qty = qm[1]
+  // หมายเหตุ = อุปกรณ์หลัง "+" — ตัด "รส/รวมส่ง" · 401 / กาว401 / กาว 401 → "กาว 401"
   let noteRaw = statusLine.replace(/สถานะ|จำนวน/g, '').replace(/[:：]/, '')
   if (qm) noteRaw = noteRaw.replace(qm[0], ' ')
+  // บรรทัดที่ขึ้นต้นด้วย + (เช่น "+ กล่องใส") นับเป็นหมายเหตุด้วย
+  lines.forEach((l) => { if (l !== statusLine && /^[+＋]/.test(l)) noteRaw += ' + ' + l })
+  noteRaw = noteRaw.replace(/รวมส่ง|รส\.?/g, ' + ').replace(/(?:กาว\s*)?(?<!\d)401(?!\d)/g, ' + กาว 401 + ')
   let parts = noteRaw
-    .split(/[+*]/)
+    .split(/[+＋*,]/)
     .map((s) => s.trim())
-    .filter((s) => s && !/^รส\.?$/.test(s) && !/รวมส่ง/.test(s) && !/^ชุด$/.test(s) && !/^\d+$/.test(s))
-  o.note = parts.length ? parts.join(', ') : '-'
+    .filter((s) => s && !/^ชุด$/.test(s) && !/^\d+$/.test(s))
+  o.note = parts.length ? [...new Set(parts)].join(', ') : '-'
 
   // วันที่ส่ง (รองรับ ส่งของวันที่/ส่งวันที่/จัดส่ง/นัดส่ง — ต้องมี DD/MM ในบรรทัดเดียวกัน)
   let dateLine =
@@ -50,7 +141,7 @@ export function parseMessage(raw) {
       (l) => /(ส่ง.*วันที่|วันที่ส่ง|วันส่ง|ส่งของ|จัดส่ง|นัดส่ง|รอบส่ง)/.test(l) && /\d{1,2}\s*\/\s*\d{1,2}/.test(l)
     ) || ''
   let dm = dateLine.match(/(\d{1,2})\s*\/\s*(\d{1,2})/)
-  if (dm) o.date = dm[1] + '/' + dm[2]
+  if (dm) o.date = normDate(dm[1] + '/' + dm[2])
 
   // บล็อกลูกค้า = บรรทัดที่ไม่ใช่คำทักทาย/สรุป/เลขลำดับ (เลขลำดับ = 1-3 หลัก ไม่ใช่เบอร์โทร)
   const summaryRe = /(^ขอบคุณ|แอค|สถานะ|จำนวน|ส่ง.*วันที่|วันที่ส่ง|^วันส่ง|ส่งของ|จัดส่ง)/
@@ -66,22 +157,9 @@ export function parseMessage(raw) {
     if (labelM) {
       let after = labelM[1]
       name = clean.slice(0, clean.indexOf(labelM[0]))
-      if (!name.trim()) {
-        let akw = after.match(ADDR_KW)
-        if (akw) {
-          let i = after.indexOf(akw[0])
-          name = after.slice(0, i)
-          addr = after.slice(i)
-        } else addr = after
-      } else addr = after
-    } else {
-      let akw = clean.match(ADDR_KW)
-      if (akw) {
-        let i = clean.indexOf(akw[0])
-        name = clean.slice(0, i)
-        addr = clean.slice(i)
-      } else name = clean
-    }
+      if (!name.trim()) [name, addr] = splitNameAddr(after, ADDR_KW)
+      else addr = after
+    } else [name, addr] = splitNameAddr(clean, ADDR_KW)
     o.name = name.replace(/ชื่อ|ผู้รับ|[:：]/g, '').replace(/\s*\/\s*/g, ' ').replace(/\s{2,}/g, ' ').trim()
     o.addr = addr.replace(/\n+/g, ' ').replace(/\s{2,}/g, ' ').trim()
   }
@@ -365,7 +443,7 @@ export default function SnailOrderForm() {
     tiktok: r.tiktok || '',
     qty: r.qty || 1,
     type: r.type || '',
-    date: r.send_date || '',
+    date: normDate(r.send_date),
     name: r.name || '',
     phone: r.phone || '',
     addr: r.addr || '',
@@ -487,7 +565,8 @@ export default function SnailOrderForm() {
     if (!online) return
     const colMap = { date: 'send_date' }
     const col = colMap[field] || field
-    const val = field === 'qty' ? parseInt(rawValue) || 1 : rawValue
+    const val = field === 'qty' ? parseInt(rawValue) || 1 : field === 'date' ? normDate(rawValue) : rawValue
+    if (field === 'date' && val !== rawValue) updateField(id, 'date', val)
     await supabase.from(TABLE).update({ [col]: val }).eq('id', id)
   }
   // ยืนยันก่อนบันทึกการแก้ไข (กันเผลอกดช่องแล้วพิมพ์ทับ)
@@ -636,7 +715,8 @@ export default function SnailOrderForm() {
   }
 
   // ===== ตัวกรองรอบส่ง =====
-  const dates = [...new Set(orders.map((o) => o.date).filter(Boolean))].sort()
+  const dates = [...new Set(orders.map((o) => o.date).filter(Boolean))]
+  const roundGroups = groupRounds(dates)
   const visible = filterDate ? orders.filter((o) => (o.date || '') === filterDate) : orders
   const total = visible.reduce((s, o) => s + o.qty, 0)
   const roundLabel = filterDate || 'ทั้งหมด'
@@ -789,10 +869,14 @@ export default function SnailOrderForm() {
             </h2>
             <div className="toolbar no-print">
               <select className="round-select" value={filterDate} onChange={(e) => setFilterDate(e.target.value)}>
-                <option value="">ทุกวัน</option>
-                {dates.map((d) => (
-                  <option key={d} value={d}>รอบส่ง {d}</option>
+                {roundGroups.map((g) => (
+                  <optgroup key={g.key} label={'── ' + g.label + ' ──'}>
+                    {g.dates.map((d) => (
+                      <option key={d} value={d}>รอบส่ง {d}</option>
+                    ))}
+                  </optgroup>
                 ))}
+                <option value="">ทุกวัน</option>
               </select>
               <button className="btn btn-ghost btn-sm" style={copiedBtn === 'addr' ? { background: 'var(--ok)', color: '#fff', borderColor: 'var(--ok)' } : undefined} onClick={() => copyForPrint(true)}>
                 {copiedBtn === 'addr' ? '✓ คัดลอกแล้ว' : '📋 คัดลอก (มีที่อยู่)'}
