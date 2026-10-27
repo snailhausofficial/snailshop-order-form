@@ -53,7 +53,7 @@ export function findArtisan(text, artisans) {
   let tie = false
   for (const a of artisans) {
     let score = 0
-    const keys = [a.name, a.nickname, a.facebook].filter(Boolean)
+    const keys = [a.name, a.nickname, a.facebook, ...(a.aliases || '').split('/').map((x) => x.trim())].filter(Boolean)
     for (const k of keys) {
       const full = norm(k)
       if (full.length >= 3 && t.includes(full)) score = Math.max(score, 10 + full.length)
@@ -82,7 +82,7 @@ export function parseBrief(raw, artisans = [], today = new Date()) {
   if (a) out.artisanId = a.id
   // ลบชื่อช่างออกจากบรรทัด (ไม่ให้ไปปนชื่อลาย/บรีฟ)
   const esc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const keys = a ? [a.facebook, a.name, a.nickname, ...(a.name || '').split(/\s+/)].filter((k) => k && k.length >= 2) : []
+  const keys = a ? [a.facebook, a.name, a.nickname, ...(a.aliases || '').split('/').map((x) => x.trim()), ...(a.name || '').split(/\s+/)].filter((k) => k && k.length >= 2) : []
   keys.sort((x, y) => y.length - x.length)
   const nameRe = keys.length ? new RegExp(`(?:ช่าง|คุณ|น้อง)?\\s*(?:${keys.map(esc).join('|')})`, 'gi') : null
   const stripName = (l) => (nameRe ? l.replace(nameRe, ' ').replace(/\s{2,}/g, ' ').trim() : l)

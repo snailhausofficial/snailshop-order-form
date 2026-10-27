@@ -4,6 +4,7 @@ import { supabase, genOrderCode } from './supabase'
 import { CARRIERS, guessCarrier, hasShipped, shipText, TrackLink } from './carriers.jsx'
 import NavSwitch from './NavSwitch.jsx'
 import { parseBrief } from './briefParser.js'
+import { ArtisanBills, MonthNav, monthOf } from './ArtisanBills.jsx'
 import { ReceivePanel, ReceiveForm, DailySummary, Section, ReceiptList, pendingOf } from './ArtisanReceive.jsx'
 import './jobs.css'
 
@@ -55,16 +56,19 @@ export const statusIdx = (s) => Math.max(0, JOB_STATUSES.indexOf(s))
 export function jobTotals(job) {
   const items = job.job_items || []
   const qty = items.reduce((s, i) => s + (Number(i.qty) || 0), 0)
-  const amount = r2(items.reduce((s, i) => s + (Number(i.qty) || 0) * (Number(i.price) || 0), 0))
+  const itemsAmount = r2(items.reduce((s, i) => s + (Number(i.qty) || 0) * (Number(i.price) || 0), 0))
+  const ship = r2(job.ship_fee)
+  const amount = r2(itemsAmount + ship)
   const anyRecv = items.some((i) => i.qty_received != null)
   const recvQty = items.reduce((s, i) => s + (Number(i.qty_received) || 0), 0)
   const damaged = items.reduce((s, i) => s + (Number(i.qty_damaged) || 0), 0)
   const goodAmount = r2(
     items.reduce((s, i) => s + Math.max(0, (Number(i.qty_received) || 0) - (Number(i.qty_damaged) || 0)) * (Number(i.price) || 0), 0)
   )
-  const paid = r2((job.job_payments || []).reduce((s, p) => s + (Number(p.amount) || 0), 0))
+  const paidReal = r2((job.job_payments || []).reduce((s, p) => s + (Number(p.amount) || 0), 0))
+  const paid = job.paid_offsystem ? Math.max(paidReal, amount) : paidReal // จ่ายแล้วนอกระบบ = ถือว่าจ่ายครบ
   const designs = new Set(items.map((i) => (i.design || '').trim()).filter(Boolean)).size
-  return { qty, amount, anyRecv, recvQty, damaged, goodAmount, paid, balance: r2(amount - paid), designs }
+  return { qty, itemsAmount, ship, amount, paidReal, anyRecv, recvQty, damaged, goodAmount, paid, balance: r2(amount - paid), designs }
 }
 
 /* ---------- รูป: ย่อให้เล็กก่อนอัป (ประหยัดเน็ต + พื้นที่) ---------- */
@@ -121,7 +125,8 @@ function jobFlags(job, artisan) {
   const nd = (job.job_delays || []).length
   if (nd) f.push({ t: `🔁 เลื่อน ${nd} ครั้ง`, c: 'am' })
   // สถานะเงิน
-  if (si >= 3 && t.balance > 0) f.push({ t: `ค้างจ่าย ${baht(t.balance)} ฿`, c: 'rd' })
+  if (job.paid_offsystem) f.push({ t: '✓ จ่ายแล้ว (นอกระบบ)', c: 'gr' })
+  else if (si >= 3 && t.balance > 0) f.push({ t: `ค้างจ่าย ${baht(t.balance)} ฿`, c: 'rd' })
   else if (t.paid <= 0 && t.amount > 0)
     f.push(payTermOf(job) === 'มัดจำก่อน' ? { t: '💸 ยังไม่โอนมัดจำ', c: 'rd' } : { t: 'ยังไม่โอน · จ่ายทีหลัง', c: 'gy' })
   else if (t.balance > 0) f.push({ t: `โอนแล้ว ${baht(t.paid)} ฿`, c: 'gr' })
@@ -143,6 +148,7 @@ export default function ArtisanJobs() {
   const [loaded, setLoaded] = useState(false)
   const [view, setView] = useState({ name: 'list' }) // list | new | job | artisans
   const [filter, setFilter] = useState('open')
+  const [month, setMonth] = useState(todayIso().slice(0, 7))
   const [q, setQ] = useState('')
   const [toast, setToast] = useState(null)
   const toastTimer = useRef(null)
@@ -273,6 +279,9 @@ export default function ArtisanJobs() {
             onArtisans={() => setView({ name: 'artisans' })}
             onReceive={() => setView({ name: 'receive' })}
             onDaily={() => setView({ name: 'daily' })}
+            onBills={() => setView({ name: 'bills' })}
+            month={month}
+            setMonth={setMonth}
           />
         )}
 
@@ -305,6 +314,10 @@ export default function ArtisanJobs() {
             />
           )
         })()}
+
+        {loaded && view.name === 'bills' && (
+          <ArtisanBills jobs={jobs} artById={artById} say={say} refresh={refreshJob} onOpen={(id) => setView({ name: 'job', id })} onBack={() => setView({ name: 'list' })} />
+        )}
 
         {loaded && view.name === 'daily' && (
           <DailySummary jobs={jobs} artById={artById} onOpen={(id) => setView({ name: 'job', id })} onBack={() => setView({ name: 'list' })} />
@@ -372,12 +385,16 @@ const FILTERS = [
   ['all', 'ทั้งหมด'],
 ]
 
-function JobList({ jobs, artById, artisans, filter, setFilter, q, setQ, onOpen, onNew, onArtisans, onReceive, onDaily }) {
+function JobList({ jobs: allJobs, artById, artisans, filter, setFilter, q, setQ, onOpen, onNew, onArtisans, onReceive, onDaily, onBills, month, setMonth }) {
   const today = todayIso()
+  // แยกรายเดือน (ตามวันสั่งงาน) + ใบที่ยังไม่จบจากเดือนก่อนยกมาด้วย
+  const isOpenJob = (j) => (j.status !== 'จ่ายเงินแล้ว' && !j.paid_offsystem) || pendingOf(j) > 0
+  const carried = (j) => monthOf(j.order_date) < month && isOpenJob(j)
+  const jobs = allJobs.filter((j) => monthOf(j.order_date) === month || carried(j))
   const test = {
     open: (j) => j.status !== 'จ่ายเงินแล้ว',
     late: (j) => statusIdx(j.status) < 2 && j.due_date && j.due_date < today,
-    unpaid: (j) => j.status !== 'จ่ายเงินแล้ว' && jobTotals(j).paid <= 0,
+    unpaid: (j) => j.status !== 'จ่ายเงินแล้ว' && !j.paid_offsystem && jobTotals(j).paid <= 0,
     pending: (j) => pendingOf(j) > 0,
     topay: (j) => statusIdx(j.status) >= 2 && j.status !== 'จ่ายเงินแล้ว' && jobTotals(j).balance > 0,
     done: (j) => j.status === 'จ่ายเงินแล้ว',
@@ -394,6 +411,9 @@ function JobList({ jobs, artById, artisans, filter, setFilter, q, setQ, onOpen, 
       return hay.includes(needle)
     })
     .sort((x, y) => {
+      const cx = carried(x) ? 0 : 1
+      const cy = carried(y) ? 0 : 1
+      if (cx !== cy) return cx - cy
       // งานยังไม่จบขึ้นก่อน แล้วเรียงตามกำหนดส่งใกล้สุด
       const dx = x.status === 'จ่ายเงินแล้ว' ? 1 : 0
       const dy = y.status === 'จ่ายเงินแล้ว' ? 1 : 0
@@ -403,7 +423,7 @@ function JobList({ jobs, artById, artisans, filter, setFilter, q, setQ, onOpen, 
 
   // ---------- ใกล้มาถึง: เลยกำหนด / ครบกำหนดวันนี้-พรุ่งนี้ / ช่างส่งของแล้ว กำลังมา ----------
   const RANK = { late: 0, soon: 1, coming: 2 }
-  const near = jobs
+  const near = allJobs
     .map((j) => {
       const si = statusIdx(j.status)
       const lastRec = (j.job_receipts || []).reduce((m, r) => (r.created_at > m ? r.created_at : m), '')
@@ -422,6 +442,7 @@ function JobList({ jobs, artById, artisans, filter, setFilter, q, setQ, onOpen, 
         <button className="btn btn-rose" onClick={onReceive}>📥 รับ/ตรวจงาน</button>
         <button className="btn btn-ghost" onClick={onDaily}>📅 สรุปรายวัน</button>
         <button className="btn btn-ghost" onClick={onArtisans}>👩‍🎨 รายชื่อช่าง ({artisans.length})</button>
+        <button className="btn btn-ghost" style={{ gridColumn: '1 / -1' }} onClick={onBills}>🧾 บิลจ่ายช่าง / ลง Flow</button>
       </div>
 
       {near.length > 0 && (
@@ -450,6 +471,7 @@ function JobList({ jobs, artById, artisans, filter, setFilter, q, setQ, onOpen, 
         </div>
       )}
 
+      <MonthNav month={month} setMonth={setMonth} />
       <div className="jb-chips">
         {FILTERS.map(([k, label]) => (
           <button key={k} className={'jb-chip' + (filter === k ? ' on' : '')} onClick={() => setFilter(k)}>
@@ -465,11 +487,14 @@ function JobList({ jobs, artById, artisans, filter, setFilter, q, setQ, onOpen, 
         </div>
       )}
 
-      {shown.map((j) => {
+      {shown.map((j, n) => {
         const a = artById[j.artisan_id]
         const t = jobTotals(j)
+        const head = n === 0 || carried(shown[n - 1]) !== carried(j)
         return (
-          <button key={j.id} className="jb-job" onClick={() => onOpen(j.id)}>
+          <div key={j.id}>
+          {head && <p className="jb-small" style={{ margin: '8px 2px 6px' }}>{carried(j) ? '⏳ ค้างจากเดือนก่อน' : '📅 ใบงานเดือนนี้'}</p>}
+          <button className="jb-job" onClick={() => onOpen(j.id)}>
             <div className="jb-job-top">
               <span className="jb-name">{artisanShort(a)}</span>
               <span className="tag pk" style={{ marginTop: 2 }}>{j.status}</span>
@@ -480,6 +505,7 @@ function JobList({ jobs, artById, artisans, filter, setFilter, q, setQ, onOpen, 
             </div>
             <Tags list={jobFlags(j, a)} />
           </button>
+          </div>
         )
       })}
     </>
@@ -756,6 +782,7 @@ function NewJob({ artisans, say, onCancel, onCreated }) {
   const [note, setNote] = useState('')
   const [groups, setGroups] = useState(() => [newGroup()])
   const [payTerm, setPayTerm] = useState('จ่ายทีหลัง')
+  const [shipFee, setShipFee] = useState('50')
   const [paste, setPaste] = useState('')
   const [saving, setSaving] = useState(false)
   const groupsRef = useRef(groups)
@@ -767,6 +794,10 @@ function NewJob({ artisans, say, onCancel, onCreated }) {
   const needle = findQ.trim().toLowerCase()
   const options = needle ? active.filter((a) => artisanHay(a).includes(needle)) : active
   const chosen = options.find((a) => String(a.id) === artisanId)
+  useEffect(() => {
+    const a = active.find((x) => String(x.id) === artisanId)
+    if (a) setShipFee(String(a.ship_fee ?? 50))
+  }, [artisanId]) // eslint-disable-line
 
   // ช่องค้นหาเหลือคนเดียว → เลือกให้เลย
   useEffect(() => {
@@ -819,7 +850,7 @@ function NewJob({ artisans, say, onCancel, onCreated }) {
     if (!items.length) return say('ใส่จำนวนอย่างน้อย 1 ไซส์', false)
     const who = artisanId === 'new' ? newName.trim() + ' (ช่างใหม่)' : artisanShort(chosen)
     const nQty = items.reduce((s, i) => s + i.qty, 0)
-    if (!window.confirm(`สร้างใบงานให้ ${who}\n${named.length} ลาย · ${nQty} ชุด · ${dueDate ? 'ส่ง ' + ddmm(dueDate) : 'ไม่ได้กำหนดวันส่ง'}\nใช่ไหม?`)) return
+    if (!window.confirm(`สร้างใบงานให้ ${who}\n${named.length} ลาย · ${nQty} ชุด · ค่าส่ง ${baht(r2(shipFee))} · ${dueDate ? 'ส่ง ' + ddmm(dueDate) : 'ไม่ได้กำหนดวันส่ง'}\nใช่ไหม?`)) return
     setSaving(true)
     try {
       let aid = Number(artisanId)
@@ -830,7 +861,7 @@ function NewJob({ artisans, say, onCancel, onCreated }) {
       }
       const { data: job, error } = await supabase
         .from('artisan_jobs')
-        .insert({ code: genOrderCode(), artisan_id: aid, order_date: orderDate || todayIso(), due_date: dueDate || null, pay_term: payTerm, brief: brief.trim(), internal_note: note.trim() })
+        .insert({ code: genOrderCode(), artisan_id: aid, order_date: orderDate || todayIso(), due_date: dueDate || null, pay_term: payTerm, ship_fee: r2(shipFee), brief: brief.trim(), internal_note: note.trim() })
         .select()
         .single()
       if (error) throw error
@@ -931,6 +962,12 @@ function NewJob({ artisans, say, onCancel, onCreated }) {
             </button>
           ))}
         </div>
+      </div>
+
+      <div className="jb-field jb-row">
+        <label style={{ margin: 0 }}>🚚 ค่าส่ง (เหมา)</label>
+        <input inputMode="decimal" style={{ width: 90 }} value={shipFee} onChange={(e) => setShipFee(e.target.value.replace(/[^\d.]/g, ''))} />
+        <span className="jb-small">บาท · รวมในยอดจ่ายช่าง</span>
       </div>
 
       <label>🎨 รายการ — แนบรูป ref ไว้ในแต่ละลาย</label>
@@ -1256,7 +1293,15 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted, onReceive })
         ) : (
           <>
             <DesignCards items={items} files={files} onAddPhoto={addDesignPhoto} onDelFile={delFile} busy={!!busy} />
-            <div className="jb-total"><span>รวม {t.qty} ชุด</span><span>{baht(t.amount)} ฿</span></div>
+            <div className="jb-kv" style={{ padding: '6px 4px 0' }}><span>ค่าเล็บ {t.qty} ชุด</span><span>{baht(t.itemsAmount)} ฿</span></div>
+            <div className="jb-kv" style={{ padding: '2px 4px' }}>
+              <span>
+                🚚 ค่าส่ง{' '}
+                <button className="icon-btn" title="แก้ค่าส่ง" onClick={() => { const v = window.prompt('ค่าส่ง (บาท)', String(t.ship)); if (v == null) return; const n = r2(v.replace(/[^\d.]/g, '')); run('ship', () => updateJob({ ship_fee: n }), 'บันทึกค่าส่งแล้ว', `เปลี่ยนค่าส่งเป็น ${baht(n)} บาท ใช่ไหม?`) }}>✏️</button>
+              </span>
+              <span>{baht(t.ship)} ฿</span>
+            </div>
+            <div className="jb-total"><span>รวม {t.qty} ชุด + ค่าส่ง</span><span>{baht(t.amount)} ฿</span></div>
             {t.anyRecv && (
               <p className="jb-small" style={{ textAlign: 'right', marginTop: 4 }}>
                 รับจริง {t.recvQty} · ชำรุด {t.damaged} · ของดีคิดเป็น {baht(t.goodAmount)} ฿
@@ -1304,7 +1349,17 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted, onReceive })
             {PAY_TERMS.map((x) => <option key={x}>{x}</option>)}
           </select>
         </h3>
-        {payments.length === 0 && (
+        <div className="jb-row" style={{ margin: '0 0 8px' }}>
+          {job.paid_offsystem ? (
+            <>
+              <span className="tag gr" style={{ margin: 0 }}>✓ จ่ายแล้ว (นอกระบบ)</span>
+              <button className="btn btn-ghost btn-sm" disabled={!!busy} onClick={() => run('off', () => updateJob({ paid_offsystem: false }), 'ยกเลิกแล้ว', 'ยกเลิก "จ่ายแล้วนอกระบบ" ใช่ไหม?')}>ยกเลิก</button>
+            </>
+          ) : (
+            <button className="btn btn-ghost btn-sm" disabled={!!busy} onClick={() => run('off', () => updateJob({ paid_offsystem: true, ...(statusIdx(job.status) >= 3 ? { status: 'จ่ายเงินแล้ว' } : {}) }), 'ติ๊กจ่ายแล้ว (นอกระบบ)', `ติ๊กว่าใบงานนี้ "จ่ายแล้วนอกระบบ" (ไม่มีสลิปในระบบ) ใช่ไหม?`)}>✔ ติ๊กจ่ายแล้ว (นอกระบบ)</button>
+          )}
+        </div>
+        {payments.length === 0 && !job.paid_offsystem && (
           <p className="jb-muted" style={{ marginBottom: 8, color: payTermOf(job) === 'มัดจำก่อน' ? '#B42318' : undefined }}>
             {payTermOf(job) === 'มัดจำก่อน' ? 'ยังไม่โอนมัดจำ — ตกลงไว้ว่าต้องโอนก่อนเริ่มงาน' : 'ยังไม่โอน — ตกลงกันว่าจ่ายทีหลัง (ตอนรับของ)'}
           </p>
@@ -1312,7 +1367,7 @@ function JobDetail({ job, artisan, say, refresh, onBack, onDeleted, onReceive })
         {payments.map((p) => (
           <div key={p.id} className="jb-list-line">
             <span className="jb-grow">
-              {p.kind} · {ddmm(p.paid_on)}{' '}
+              {p.kind} · {ddmm(p.paid_on)}{p.flow_doc ? <span className="tag gr">Flow {p.flow_doc}</span> : null}{' '}
               {p.slip_path ? (
                 <a className="jb-link" href={fileUrl(p.slip_path)} target="_blank" rel="noreferrer">🧾 สลิป</a>
               ) : (
@@ -1514,6 +1569,7 @@ function ArtisanList({ artisans, jobs, say, refresh, onBack }) {
       code: (form.code || '').trim(),
       nickname: (form.nickname || '').trim(),
       facebook: (form.facebook || '').trim(),
+      ship_fee: r2(form.ship_fee ?? 50),
       in_flow: !!form.in_flow,
       line_id: (form.line_id || '').trim(),
       phone: (form.phone || '').trim(),
@@ -1563,6 +1619,10 @@ function ArtisanList({ artisans, jobs, say, refresh, onBack }) {
         <div className="jb-field">
           <label>ชื่อในใบ / ชื่อเล่น</label>
           <input value={form.nickname || ''} onChange={(e) => setForm({ ...form, nickname: e.target.value })} />
+        </div>
+        <div className="jb-field">
+          <label>ค่าส่งเหมา (บาท)</label>
+          <input inputMode="decimal" value={form.ship_fee ?? 50} onChange={(e) => setForm({ ...form, ship_fee: e.target.value.replace(/[^\d.]/g, '') })} />
         </div>
         <div className="jb-field">
           <label>ชื่อ Facebook</label>

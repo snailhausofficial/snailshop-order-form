@@ -161,6 +161,8 @@ export function ReceiveForm({ job, artisan, say, onDone, onCancel }) {
   const [issues, setIssues] = useState([])
   const [photos, setPhotos] = useState([])
   const [note, setNote] = useState('')
+  const [shipFee, setShipFee] = useState(String(artisan?.ship_fee ?? 50))
+  const [paidOff, setPaidOff] = useState(false)
   const [saving, setSaving] = useState(false)
   const photosRef = useRef(photos)
   photosRef.current = photos
@@ -191,7 +193,7 @@ export function ReceiveForm({ job, artisan, say, onDone, onCancel }) {
     if ((Number(followup) || 0) > totalRecv) return say(`"ส่งตามมาแล้ว" ต้องไม่เกินจำนวนที่รับรอบนี้ (${totalRecv} ชุด)`, false)
     const cleanIssues = issues.filter((x) => Number(x.qty) > 0 || x.note.trim())
     const issTxt = cleanIssues.filter((x) => Number(x.qty) > 0).map((x) => `${x.kind} ${x.qty}`).join(' · ')
-    if (!window.confirm(`บันทึกการรับของ ${artisanShort(artisan)}\nวันที่ ${ddmm(date)} · รับ ${totalRecv} ชุด${fu ? ` (ส่งตาม ${fu})` : ''}${issTxt ? '\n' + issTxt : ''}${isNew ? '\n(สร้างใบงานย้อนหลังให้)' : ''}\nใช่ไหม?`)) return
+    if (!window.confirm(`บันทึกการรับของ ${artisanShort(artisan)}\nวันที่ ${ddmm(date)} · รับ ${totalRecv} ชุด${fu ? ` (ส่งตาม ${fu})` : ''}${issTxt ? '\n' + issTxt : ''}${isNew ? `\n(สร้างใบงานย้อนหลังให้ · ค่าส่ง ${shipFee || 0} บาท${paidOff ? ' · จ่ายแล้วนอกระบบ' : ''})` : ''}\nใช่ไหม?`)) return
     setSaving(true)
     try {
       const must = ({ error, data }) => {
@@ -210,7 +212,7 @@ export function ReceiveForm({ job, artisan, say, onDone, onCancel }) {
         const created = must(
           await supabase
             .from('artisan_jobs')
-            .insert({ code: genOrderCode(), artisan_id: artisan.id, order_date: date, due_date: null, status: 'รับ/ตรวจแล้ว', pay_term: 'จ่ายทีหลัง', backdated: true, brief: '', internal_note: 'ใบงานย้อนหลัง (สร้างตอนรับของ)' })
+            .insert({ code: genOrderCode(), artisan_id: artisan.id, order_date: date, due_date: null, status: paidOff ? 'จ่ายเงินแล้ว' : 'รับ/ตรวจแล้ว', pay_term: 'จ่ายทีหลัง', backdated: true, ship_fee: Number(shipFee) || 0, paid_offsystem: paidOff, brief: '', internal_note: 'ใบงานย้อนหลัง (สร้างตอนรับของ)' })
             .select()
             .single()
         )
@@ -297,6 +299,15 @@ export function ReceiveForm({ job, artisan, say, onDone, onCancel }) {
           <>
             <p className="jb-small" style={{ marginBottom: 8 }}>ใส่ลาย / ไซส์ / จำนวนที่ได้รับ (ราคาไม่บังคับ — ใส่ถ้าซื้อเลย)</p>
             <GroupsEditor groups={groups} setGroups={setGroups} />
+            <div className="jb-row" style={{ marginTop: 8 }}>
+              <span className="jb-small">🚚 ค่าส่ง</span>
+              <input inputMode="decimal" style={{ width: 80 }} value={shipFee} onChange={(e) => setShipFee(e.target.value.replace(/[^\d.]/g, ''))} />
+              <span className="jb-small">บาท</span>
+            </div>
+            <label className="jb-paidoff">
+              <input type="checkbox" checked={paidOff} onChange={(e) => setPaidOff(e.target.checked)} />
+              <span>✔ จ่ายแล้ว (นอกระบบ) — ไม่ต้องแนบสลิป ปิดใบงานเป็น "จ่ายเงินแล้ว" เลย</span>
+            </label>
           </>
         ) : (
           <>
@@ -454,6 +465,12 @@ export function DailySummary({ jobs, artById, onOpen, onBack }) {
   const byKind = {}
   rows.forEach(({ r }) => (r.receipt_issues || []).forEach((x) => (byKind[x.kind] = (byKind[x.kind] || 0) + (Number(x.qty) || 0))))
   const artisansN = new Set(rows.map((x) => x.j.artisan_id)).size
+  const ym = date.slice(0, 7)
+  const mRecs = jobs.flatMap((j) => (j.job_receipts || []).filter((r) => (r.received_on || '').slice(0, 7) === ym))
+  const mQty = mRecs.reduce((s, r) => s + (Number(r.qty_total) || 0), 0)
+  const mKind = {}
+  mRecs.forEach((r) => (r.receipt_issues || []).forEach((x) => (mKind[x.kind] = (mKind[x.kind] || 0) + (Number(x.qty) || 0))))
+  const mPaid = jobs.flatMap((j) => j.job_payments || []).filter((p) => (p.paid_on || '').slice(0, 7) === ym).reduce((s, p) => s + (Number(p.amount) || 0), 0)
 
   return (
     <>
@@ -474,6 +491,12 @@ export function DailySummary({ jobs, artById, onOpen, onBack }) {
             {Object.entries(byKind).map(([k, v]) => <IssueTag key={k} x={{ kind: k, qty: v }} />)}
           </div>
         )}
+      </div>
+
+      <div className="jb-card" style={{ background: 'var(--petal)' }}>
+        <div className="jb-kv"><span>ทั้งเดือน {ym.slice(5, 7)}/{ym.slice(0, 4)} · {mRecs.length} รอบรับ</span><b>รับ {mQty} ชุด</b></div>
+        <div className="jb-kv"><span>จ่ายช่างทั้งเดือน (มีสลิป)</span><b>{baht(mPaid)} ฿</b></div>
+        <div>{Object.entries(mKind).map(([k, v]) => <IssueTag key={k} x={{ kind: k, qty: v }} />)}</div>
       </div>
 
       {rows.length === 0 && <div className="jb-card"><p className="jb-muted">วันนี้ยังไม่มีการรับงาน</p></div>}

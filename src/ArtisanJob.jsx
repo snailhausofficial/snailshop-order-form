@@ -181,7 +181,10 @@ export default function ArtisanJob() {
         <div className="ord-sec">
           <div className="ord-sec-title">🎨 รายการ</div>
           <DesignCards items={j.job_items} files={files.filter((f) => f.uploaded_by !== 'ช่าง' && !f.receipt_id)} />
-          <div className="jb-total"><span>รวม {t.qty} ชุด</span><span>{baht(t.amount)} ฿</span></div>
+          {t.ship > 0 && (
+            <div className="jb-kv" style={{ padding: '6px 4px 0' }}><span>🚚 ค่าส่ง (เหมา)</span><span>{baht(t.ship)} ฿</span></div>
+          )}
+          <div className="jb-total"><span>รวม {t.qty} ชุด{t.ship > 0 ? ' + ค่าส่ง' : ''}</span><span>{baht(t.amount)} ฿</span></div>
           {t.anyRecv && (
             <div className="ord-line" style={{ fontSize: 13 }}>
               ร้านรับของแล้ว {t.recvQty} ชุด{t.damaged ? ` · ชำรุด ${t.damaged} ชุด` : ''}
@@ -214,7 +217,7 @@ export default function ArtisanJob() {
         {/* การจ่ายเงิน */}
         <div className="ord-sec">
           <div className="ord-sec-title">💸 การจ่ายเงิน</div>
-          {j.job_payments.length === 0 && <div className="ord-line jb-muted">ยังไม่มีการโอน</div>}
+          {j.job_payments.length === 0 && <div className="ord-line jb-muted">{job.paid_offsystem ? 'จ่ายครบแล้ว' : 'ยังไม่มีการโอน'}</div>}
           {j.job_payments.map((p, k) => (
             <div key={k} className="jb-list-line">
               <span>
