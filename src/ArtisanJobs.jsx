@@ -737,7 +737,7 @@ export function artisanShort(a) {
   if (!a) return '(ไม่พบช่าง)'
   return a.nickname && a.nickname !== a.name ? `${a.nickname} (${a.name})` : a.name
 }
-export const artisanHay = (a) => [a.code, a.name, a.nickname, a.facebook].filter(Boolean).join(' ').toLowerCase()
+export const artisanHay = (a) => [a.code, a.name, a.nickname, a.aliases, a.facebook].filter(Boolean).join(' ').toLowerCase()
 export const sortArtisans = (list) =>
   [...list].sort((x, y) => (x.code || 'zzz').localeCompare(y.code || 'zzz') || (x.name || '').localeCompare(y.name || '', 'th'))
 
@@ -766,7 +766,7 @@ function NewJob({ artisans, say, onCancel, onCreated }) {
 
   const needle = findQ.trim().toLowerCase()
   const options = needle ? active.filter((a) => artisanHay(a).includes(needle)) : active
-  const chosen = active.find((a) => String(a.id) === artisanId)
+  const chosen = options.find((a) => String(a.id) === artisanId)
 
   // ช่องค้นหาเหลือคนเดียว → เลือกให้เลย
   useEffect(() => {
@@ -1633,7 +1633,7 @@ function ArtisanList({ artisans, jobs, say, refresh, onBack }) {
                 <button className="btn btn-ghost btn-sm" onClick={() => (editId === a.id ? setEditId(null) : open(a))}>แก้</button>
               </div>
               <div className="jb-small">
-                {[a.facebook && 'FB ' + a.facebook, a.line_id && 'LINE ' + a.line_id, a.phone].filter(Boolean).join(' · ') || '—'}
+                {[a.aliases && 'เรียก ' + a.aliases, a.facebook && 'FB ' + a.facebook, a.line_id && 'LINE ' + a.line_id, a.phone].filter(Boolean).join(' · ') || '—'}
               </div>
               <div>
                 <button className={'tag ' + (a.id_card_ok ? 'gr' : 'rd')} style={{ border: 'none', cursor: 'pointer' }} onClick={() => toggleCard(a)} title="กดเพื่อสลับ">
