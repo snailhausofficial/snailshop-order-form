@@ -1,6 +1,26 @@
 import { useState, useEffect, useRef } from 'react'
+import { createClient } from '@supabase/supabase-js'
 import { supabase, TABLE, STATUSES, genOrderCode } from './supabase'
 import NavSwitch from './NavSwitch.jsx'
+
+// อีเมลเจ้าของหลัก — ใช้เช็กรหัสก่อน "ล้างรอบนี้" (ลบทีละเยอะ)
+const OWNER_EMAIL = 'snailhausofficial@gmail.com'
+// ตัวเช็กรหัสเจ้าของ: client แยก ไม่เก็บ session → คนที่ล็อกอินอยู่ไม่หลุด/ไม่สลับบัญชี
+let ownerChecker = null
+async function checkOwnerPassword(password) {
+  const url = import.meta.env.VITE_SUPABASE_URL
+  const key = import.meta.env.VITE_SUPABASE_ANON_KEY
+  if (!url || !key) return true // โหมดทดลอง (ไม่ต่อฐานข้อมูล)
+  if (!ownerChecker) {
+    ownerChecker = createClient(url, key, {
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false, storageKey: 'snail-owner-check' },
+    })
+  }
+  const { error } = await ownerChecker.auth.signInWithPassword({ email: OWNER_EMAIL, password })
+  if (error) return false
+  await ownerChecker.auth.signOut({ scope: 'local' })
+  return true
+}
 
 /* ================= ตัวแยกข้อความอัตโนมัติ ================= */
 const PHONE = /(?<!\d)0(?:[\s.\-]?\d){8,9}/g
@@ -31,19 +51,20 @@ export function normDate(d) {
 
 // เรียงรอบส่ง ใหม่สุดขึ้นก่อน + แบ่งตามเดือน (เดาปีจากวันนี้ — ช่วงข้ามปี 05/01 อยู่เหนือ 28/12)
 const TH_MONTHS = ['มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน', 'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม']
-export function groupRounds(dates, today = new Date()) {
+export function roundInfo(d, today = new Date()) {
   const ty = today.getFullYear()
-  const items = dates.map((d) => {
-    const m = d.match(/^(\d{2})\/(\d{2})$/)
-    if (!m) return { d, t: -Infinity, key: 'other', label: 'อื่นๆ' }
-    const day = +m[1], mon = +m[2] - 1
-    let y = ty
-    const diff = mon - today.getMonth()
-    if (diff > 2) y = ty - 1 // เดือนที่ "ล่วงหน้าเกิน 2 เดือน" = ของปีที่แล้ว
-    else if (diff < -9) y = ty + 1 // ธ.ค. มองไป ม.ค. = ปีหน้า
-    const label = TH_MONTHS[mon] + (y !== ty ? ' ' + (y + 543) : '')
-    return { d, t: new Date(y, mon, day).getTime(), key: y + '-' + mon, label }
-  })
+  const m = String(d || '').match(/^(\d{2})\/(\d{2})$/)
+  if (!m) return { d, t: -Infinity, key: 'other', label: 'อื่นๆ' }
+  const day = +m[1], mon = +m[2] - 1
+  let y = ty
+  const diff = mon - today.getMonth()
+  if (diff > 2) y = ty - 1 // เดือนที่ "ล่วงหน้าเกิน 2 เดือน" = ของปีที่แล้ว
+  else if (diff < -9) y = ty + 1 // ธ.ค. มองไป ม.ค. = ปีหน้า
+  const label = TH_MONTHS[mon] + (y !== ty ? ' ' + (y + 543) : '')
+  return { d, t: new Date(y, mon, day).getTime(), key: y + '-' + mon, label }
+}
+export function groupRounds(dates, today = new Date()) {
+  const items = dates.map((d) => roundInfo(d, today))
   items.sort((a, b) => b.t - a.t)
   const groups = []
   items.forEach((it) => {
@@ -80,6 +101,7 @@ function splitNameAddr(clean, ADDR_KW) {
   const kwAt = akw ? text.indexOf(akw[0]) : -1
   let name = ''
   let addr = ''
+  let guessed = false
   if (kwAt >= 0) {
     name = text.slice(0, kwAt)
     addr = text.slice(kwAt)
@@ -89,7 +111,8 @@ function splitNameAddr(clean, ADDR_KW) {
     }
   } else if (lastPc) {
     ;[name, addr] = takeName(text)
-  } else return [text, '']
+    guessed = true // ไม่มีคำบอกที่อยู่ → เดาจาก 2 คำแรก
+  } else return [text, '', false]
 
   // ไม่มีชื่อข้างหน้า → ดูว่ามีชื่อต่อท้ายรหัสไปรษณีย์ไหม
   if (!name.replace(/ชื่อ|ผู้รับ|[:：,]/g, '').trim() && lastPc) {
@@ -106,8 +129,9 @@ function splitNameAddr(clean, ADDR_KW) {
   if (rest && lastPc) {
     name = n2
     addr = rest + ' ' + addr
+    guessed = true
   }
-  return [name, addr]
+  return [name, addr, guessed]
 }
 
 export function parseMessage(raw) {
@@ -157,9 +181,9 @@ export function parseMessage(raw) {
     if (labelM) {
       let after = labelM[1]
       name = clean.slice(0, clean.indexOf(labelM[0]))
-      if (!name.trim()) [name, addr] = splitNameAddr(after, ADDR_KW)
+      if (!name.trim()) [name, addr, o.guess] = splitNameAddr(after, ADDR_KW)
       else addr = after
-    } else [name, addr] = splitNameAddr(clean, ADDR_KW)
+    } else [name, addr, o.guess] = splitNameAddr(clean, ADDR_KW)
     o.name = name.replace(/ชื่อ|ผู้รับ|[:：]/g, '').replace(/\s*\/\s*/g, ' ').replace(/\s{2,}/g, ' ').trim()
     o.addr = addr.replace(/\n+/g, ' ').replace(/\s{2,}/g, ' ').trim()
   }
@@ -333,6 +357,42 @@ const BLANK = { tiktok: '', qty: 1, type: '', date: '', name: '', phone: '', add
 // โดเมนหลักของเว็บ (ลิงก์ที่ส่งให้ลูกค้าจะใช้ตัวนี้เสมอ) — เปลี่ยนได้ที่นี่ หรือตั้ง env VITE_SITE_URL
 const SITE_URL = import.meta.env.VITE_SITE_URL || 'https://order.snailshop.org'
 
+// ===== เตือนข้อมูลไม่ครบ / น่าสงสัย (แถวสีเหลือง) =====
+export function warnsOf(o) {
+  const w = []
+  const phones = String(o.phone || '').split('/').map((x) => x.replace(/\D/g, '')).filter(Boolean)
+  if (!o.name || !o.name.trim()) w.push('ไม่มีชื่อ')
+  else if (o.guess) w.push('ระบบเดาชื่อ')
+  if (phones.length === 0) w.push('ไม่มีเบอร์')
+  else if (phones.some((p) => p.length !== 10)) w.push('เบอร์ไม่ครบ 10 หลัก')
+  if (!/(?<!\d)\d{5}(?!\d)/.test(o.addr || '')) w.push('ไม่มีรหัสไปรษณีย์')
+  return w
+}
+
+// เบอร์ของออเดอร์ (9 หลักท้าย) — ใช้นับว่าเป็นลูกค้าคนเดียวกัน
+export function phoneKeys(phone) {
+  return String(phone || '')
+    .split('/')
+    .map((x) => x.replace(/\D/g, ''))
+    .filter((d) => d.length >= 9)
+    .map((d) => d.slice(-9))
+}
+
+// ค้นหาข้ามรอบ: ชื่อจริง / แอค TikTok / เบอร์ (หรือ 4 ตัวท้าย) / เลขพัสดุ
+export function matchSearch(o, q) {
+  const t = q.trim().toLowerCase()
+  if (!t) return true
+  const digits = t.replace(/[\s-]/g, '')
+  if (/^\d{3,}$/.test(digits)) {
+    const ph = String(o.phone || '').replace(/\D/g, '')
+    if (ph.includes(digits)) return true
+  }
+  const hay = [o.tiktok, o.name, o.tracking, o.phone].join(' ').toLowerCase()
+  return hay.includes(t) || hay.replace(/\s/g, '').includes(t.replace(/\s/g, ''))
+}
+
+const SORT_DEFAULT_DIR = { created: 'desc', qty: 'desc', tiktok: 'asc', status: 'asc' }
+
 export default function SnailOrderForm() {
   const [orders, setOrders] = useState([])
   const [pSummary, setPSummary] = useState('')
@@ -345,6 +405,28 @@ export default function SnailOrderForm() {
   const [showTrack, setShowTrack] = useState(false)
   const [unmatched, setUnmatched] = useState([])
   const [copiedBtn, setCopiedBtn] = useState('')
+  const [search, setSearch] = useState('') // 🔍 ค้นหาข้ามรอบ
+  const [sort, setSort] = useState({ key: 'created', dir: 'desc' }) // ลูกศรหัวตาราง (ใบปะหน้าไม่ตาม)
+  const [historyOf, setHistoryOf] = useState(null) // 👤 ประวัติลูกค้า
+  const [ownerModal, setOwnerModal] = useState(null) // 🔒 รหัสเจ้าของก่อนล้างรอบ
+  const [ownerPw, setOwnerPw] = useState('')
+  const [ownerMsg, setOwnerMsg] = useState('')
+  const [ownerBusy, setOwnerBusy] = useState(false)
+  const [formHidden, setFormHidden] = useState(() => {
+    try {
+      return localStorage.getItem('snail.formHidden') === '1'
+    } catch {
+      return false
+    }
+  })
+  function toggleForm() {
+    setFormHidden((v) => {
+      try {
+        localStorage.setItem('snail.formHidden', v ? '0' : '1')
+      } catch {}
+      return !v
+    })
+  }
   // ===== ล็อกอินพนักงาน (Supabase Auth) =====
   const [unlocked, setUnlocked] = useState(false)
   const [authChecked, setAuthChecked] = useState(false) // เช็ก session เสร็จหรือยัง (กันหน้าล็อกกะพริบ)
@@ -362,7 +444,7 @@ export default function SnailOrderForm() {
 
   // ชื่อแท็บของหน้าพนักงาน (หน้าลูกค้าใช้ชื่อจาก index.html)
   useEffect(() => {
-    document.title = 'SnailShop — หลังร้าน'
+    document.title = 'หลังร้าน Snail Shop'
   }, [])
 
   // เปิดหน้ามา → เช็กว่าเคยล็อกอินค้างไว้ไหม + คอยฟังการล็อกอิน/ล็อกเอาต์
@@ -492,7 +574,8 @@ export default function SnailOrderForm() {
       setFlash({ msg: 'บันทึกไม่สำเร็จ: ' + error.message, ok: false })
       return []
     }
-    const rows = (data || []).map(fromRow)
+    // guess (ระบบเดาชื่อ) ไม่ได้เก็บในฐานข้อมูล — ติดไว้ในหน้าจนกว่าจะแก้ชื่อหรือรีเฟรช
+    const rows = (data || []).map((r, k) => ({ ...fromRow(r), guess: !!list[k]?.guess }))
     setOrders((prev) => [...prev, ...rows])
     return rows
   }
@@ -516,6 +599,7 @@ export default function SnailOrderForm() {
         phone: o.phone,
         addr: o.addr,
         note: o.note || '-',
+        guess: !!o.guess,
       }))
     if (parsed.length === 0) {
       setFlash({ msg: 'แยกไม่ได้ ลองเช็กว่ามีบรรทัด “แอคเค้าตต” ไหม', ok: false })
@@ -525,6 +609,8 @@ export default function SnailOrderForm() {
     if (added.length > 0) {
       const d = parsed.find((o) => o.date)?.date
       if (d) setFilterDate(d)
+      setSearch('')
+      setSort({ key: 'created', dir: 'desc' }) // ให้คนที่เพิ่งกรอกอยู่บนสุด
       setPSummary('')
       setPAddr('')
       if (added.length === 1) {
@@ -553,7 +639,7 @@ export default function SnailOrderForm() {
 
   // เพิ่มแถวว่างไว้พิมพ์เองในตาราง
   async function addEmptyRow() {
-    const blank = { tiktok: '', qty: 1, type: '', date: filterDate || '', name: '', phone: '', addr: '', note: '-' }
+    const blank = { tiktok: '', qty: 1, type: '', date: isRound ? filterDate : '', name: '', phone: '', addr: '', note: '-' }
     await saveOrders([blank])
   }
 
@@ -562,6 +648,7 @@ export default function SnailOrderForm() {
     setOrders((prev) => prev.map((x) => (x.id === id ? { ...x, [field]: value } : x)))
   }
   async function saveField(id, field, rawValue) {
+    if (field === 'name') updateField(id, 'guess', false)
     if (!online) return
     const colMap = { date: 'send_date' }
     const col = colMap[field] || field
@@ -629,19 +716,45 @@ export default function SnailOrderForm() {
     } catch {}
   }
 
-  async function clearRound() {
-    const label = filterDate || 'ทุกวัน'
-    const ids = (filterDate ? orders.filter((o) => (o.date || '') === filterDate) : orders).map((o) => o.id)
+  // ล้างรอบนี้ → ต้องใส่รหัสผ่านของเจ้าของหลักก่อน (กันมือบอน/เผลอกด)
+  function clearRound() {
+    if (!isRound) {
+      setFlash({ msg: 'ล้างได้ทีละรอบเท่านั้น — เลือกรอบส่งก่อนนะคะ', ok: false })
+      return
+    }
+    const ids = orders.filter((o) => (o.date || '') === filterDate).map((o) => o.id)
     if (ids.length === 0) return
-    if (!confirm(`ล้างออเดอร์รอบส่ง ${label}? (ลบถาวร ${ids.length} รายการ)`)) return
+    setOwnerPw('')
+    setOwnerMsg('')
+    setOwnerModal({ ids, label: filterDate })
+  }
+  async function confirmClearRound() {
+    if (!ownerModal) return
+    if (!ownerPw) {
+      setOwnerMsg('ใส่รหัสผ่านของเจ้าของก่อนนะคะ')
+      return
+    }
+    setOwnerBusy(true)
+    const ok = await checkOwnerPassword(ownerPw)
+    if (!ok) {
+      setOwnerBusy(false)
+      setOwnerMsg('รหัสผ่านไม่ถูกต้อง — ไม่ได้ลบอะไร')
+      return
+    }
+    const { ids, label } = ownerModal
     if (online) {
       const { error } = await supabase.from(TABLE).delete().in('id', ids)
       if (error) {
-        setFlash({ msg: 'ล้างไม่สำเร็จ: ' + error.message, ok: false })
+        setOwnerBusy(false)
+        setOwnerMsg('ล้างไม่สำเร็จ: ' + error.message)
         return
       }
     }
+    setOwnerBusy(false)
     setOrders((prev) => prev.filter((o) => !ids.includes(o.id)))
+    setOwnerModal(null)
+    setOwnerPw('')
+    setFlash({ msg: `🗑️ ล้างรอบส่ง ${label} แล้ว (${ids.length} รายการ)`, ok: true })
   }
 
   async function importTracking() {
@@ -649,7 +762,7 @@ export default function SnailOrderForm() {
       setFlash({ msg: 'วางลิสต์เลขพัสดุ (Flash หรือไปรษณีย์ไทย) ก่อนนะคะ', ok: false })
       return
     }
-    if (!filterDate) {
+    if (!isRound) {
       setFlash({ msg: 'เลือกรอบส่งก่อนนะคะ — ระบบจะจับคู่เฉพาะในรอบนั้น ไม่จับข้ามรอบ', ok: false })
       return
     }
@@ -715,15 +828,91 @@ export default function SnailOrderForm() {
   }
 
   // ===== ตัวกรองรอบส่ง =====
+  // filterDate: '' = ทุกวัน · 'DD/MM' = รอบส่ง · 'month:<ปี-เดือน>' = ทั้งเดือน
   const dates = [...new Set(orders.map((o) => o.date).filter(Boolean))]
-  const roundGroups = groupRounds(dates)
-  const visible = filterDate ? orders.filter((o) => (o.date || '') === filterDate) : orders
-  const total = visible.reduce((s, o) => s + o.qty, 0)
-  const roundLabel = filterDate || 'ทั้งหมด'
+  const roundGroups = groupRounds(dates).map((g) => {
+    const inMonth = orders.filter((o) => g.dates.includes(o.date))
+    return { ...g, count: inMonth.length, qty: inMonth.reduce((s, o) => s + (parseInt(o.qty) || 0), 0) }
+  })
+  const isMonth = filterDate.startsWith('month:')
+  const searching = !!search.trim()
+  const isRound = !!filterDate && !isMonth && !searching
+  const monthGroup = isMonth ? roundGroups.find((g) => 'month:' + g.key === filterDate) : null
+  // visible = ลำดับเดิม (ลำดับที่กรอก) → ใช้กับใบปะหน้า + คัดลอก Peripage
+  const visible = searching
+    ? orders.filter((o) => matchSearch(o, search))
+    : isMonth
+      ? orders.filter((o) => (monthGroup ? monthGroup.dates.includes(o.date) : false))
+      : filterDate
+        ? orders.filter((o) => (o.date || '') === filterDate)
+        : orders
+  const total = visible.reduce((s, o) => s + (parseInt(o.qty) || 0), 0)
+  const roundLabel = searching
+    ? `ผลค้นหา “${search.trim()}”`
+    : isMonth
+      ? `เดือน${monthGroup ? monthGroup.label : ''}`
+      : filterDate
+        ? `รอบส่ง ${filterDate}`
+        : 'รอบส่ง ทั้งหมด'
+  // สรุปรายรอบของเดือนที่เลือก
+  const monthRounds = monthGroup
+    ? monthGroup.dates.map((d) => {
+        const os = orders.filter((o) => o.date === d)
+        return { d, count: os.length, qty: os.reduce((s, o) => s + (parseInt(o.qty) || 0), 0) }
+      })
+    : []
+  const glueCount = visible.filter((o) => /401/.test(o.note || '')).length
+
+  // ===== เรียงในตาราง (กดหัวตาราง) — ใบปะหน้า/คัดลอก ยังเรียงตามลำดับเดิม =====
+  const created = new Map(orders.map((o, i) => [o.id, i]))
+  const tableRows = [...visible].sort((a, b) => {
+    let r = 0
+    if (sort.key === 'qty') r = (parseInt(a.qty) || 0) - (parseInt(b.qty) || 0)
+    else if (sort.key === 'tiktok') r = String(a.tiktok || '').replace(/^@/, '').localeCompare(String(b.tiktok || '').replace(/^@/, ''), 'th')
+    else if (sort.key === 'status') r = STATUSES.indexOf(a.status || STATUSES[0]) - STATUSES.indexOf(b.status || STATUSES[0])
+    if (r === 0) r = (created.get(a.id) ?? 0) - (created.get(b.id) ?? 0)
+    return sort.dir === 'asc' ? r : -r
+  })
+  function sortBy(key) {
+    setSort((s) => (s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: SORT_DEFAULT_DIR[key] }))
+  }
+  function SortTh({ k, children, title }) {
+    const on = sort.key === k
+    return (
+      <th className={'th-sort' + (on ? ' on' : '')} onClick={() => sortBy(k)} title={title || 'กดเพื่อเรียง'}>
+        {children} <span className="sort-arrow">{on ? (sort.dir === 'asc' ? '▲' : '▼') : '⇅'}</span>
+      </th>
+    )
+  }
+
+  // ===== 👤 ประวัติลูกค้า (นับคนเดียวกันจากเบอร์) =====
+  function historyFor(o) {
+    const keys = phoneKeys(o.phone)
+    const byPhone = keys.length > 0
+    const list = byPhone
+      ? orders.filter((x) => phoneKeys(x.phone).some((k) => keys.includes(k)))
+      : orders.filter((x) => o.tiktok && x.tiktok === o.tiktok)
+    const sorted = [...list].sort((a, b) => {
+      const r = roundInfo(b.date).t - roundInfo(a.date).t
+      return r !== 0 ? r : (created.get(b.id) ?? 0) - (created.get(a.id) ?? 0)
+    })
+    const accounts = [...new Set(list.map((x) => (x.tiktok || '').trim()).filter(Boolean))]
+    const withDate = sorted.filter((x) => x.date)
+    return {
+      who: o.name || o.tiktok || '-',
+      phone: o.phone,
+      byPhone,
+      list: sorted,
+      accounts,
+      qty: list.reduce((s, x) => s + (parseInt(x.qty) || 0), 0),
+      first: withDate.length ? withDate[withDate.length - 1].date : '-',
+      last: withDate.length ? withDate[0].date : '-',
+    }
+  }
 
   // สร้างข้อความสำหรับก๊อปไปวางในแอปปริ้น (เฉพาะรอบที่เลือก)
   function buildText(withAddr) {
-    const date = filterDate || visible.find((o) => o.date)?.date || ''
+    const date = isRound ? filterDate : isMonth ? roundLabel : visible.find((o) => o.date)?.date || ''
     const sum = visible.reduce((s, o) => s + o.qty, 0)
     let out = `วันที่ส่ง ${date}\n========================\n\n`
     visible.forEach((o, i) => {
@@ -778,6 +967,7 @@ export default function SnailOrderForm() {
       <div className="lock-wrap">
         <div className="lock-card">
           <img src={LOGO} alt="Snail Shop" style={{ width: '100%', maxWidth: 220, display: 'block', margin: '0 auto 6px' }} />
+          <div className="lock-title">หลังร้าน Snail Shop</div>
           <p>สำหรับพนักงานเท่านั้น</p>
           <input
             type="email"
@@ -809,7 +999,7 @@ export default function SnailOrderForm() {
       <header>
         <img src={LOGO} alt="Snail Shop" style={{ height: 44, background: '#fff', borderRadius: 12, padding: '4px 10px', display: 'block' }} />
         <div>
-          <p>ฟอร์มกรอกออเดอร์ — เล็บปลอม Handmade</p>
+          <p>หลังร้าน Snail Shop</p>
         </div>
         <span className={'conn ' + (online ? 'on' : 'off')}>
           {online ? '● บันทึกลงฐานข้อมูล' : '○ โหมดทดลอง (ยังไม่ต่อฐานข้อมูล)'}
@@ -821,10 +1011,14 @@ export default function SnailOrderForm() {
       </header>
       {online && <NavSwitch active="orders" />}
 
-      <div className="wrap">
+      <div className={'wrap' + (formHidden ? ' wrap-wide' : '')}>
         {/* ===== FORM ===== */}
+        {!formHidden && (
         <section className="card form-card no-print">
-          <h2>➕ เพิ่มออเดอร์</h2>
+          <div className="form-head">
+            <h2>➕ เพิ่มออเดอร์</h2>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={toggleForm} title="ซ่อนฟอร์ม ให้ตารางเต็มจอ">◀ ซ่อนฟอร์ม</button>
+          </div>
           <p className="hint">วางข้อความ 2 ช่อง แล้วกดเข้าตารางเลย · แก้ตัวเลข/ข้อมูลในตารางได้ทีหลัง</p>
 
           <div className="paste-wrap">
@@ -860,17 +1054,22 @@ export default function SnailOrderForm() {
               : '* ยังไม่ได้ต่อฐานข้อมูล (ตั้งค่า env ใน Vercel) ตอนนี้ข้อมูลอยู่ชั่วคราวในหน้า'}
           </p>
         </section>
+        )}
 
         {/* ===== TABLE ===== */}
         <section className="card no-print">
           <div className="list-head">
             <h2 style={{ margin: 0 }}>
-              📋 รอบส่ง {roundLabel} <span className="pill">{visible.length} ออเดอร์ · {total} ชุด</span>
+              📋 {roundLabel} <span className="pill">{visible.length} ออเดอร์ · {total.toLocaleString()} ชุด</span>
             </h2>
             <div className="toolbar no-print">
-              <select className="round-select" value={filterDate} onChange={(e) => setFilterDate(e.target.value)}>
+              {formHidden && (
+                <button className="btn btn-primary btn-sm" onClick={toggleForm}>▶ แสดงฟอร์ม (เพิ่มออเดอร์)</button>
+              )}
+              <select className="round-select" value={filterDate} onChange={(e) => { setFilterDate(e.target.value); setSearch('') }}>
                 {roundGroups.map((g) => (
-                  <optgroup key={g.key} label={'── ' + g.label + ' ──'}>
+                  <optgroup key={g.key} label={`── ${g.label} · ${g.count.toLocaleString()} ออเดอร์ · ${g.qty.toLocaleString()} ชุด ──`}>
+                    <option value={'month:' + g.key}>📅 ทั้งเดือน{g.label}</option>
                     {g.dates.map((d) => (
                       <option key={d} value={d}>รอบส่ง {d}</option>
                     ))}
@@ -884,13 +1083,38 @@ export default function SnailOrderForm() {
               <button className="btn btn-ghost btn-sm" style={copiedBtn === 'summary' ? { background: 'var(--ok)', color: '#fff', borderColor: 'var(--ok)' } : undefined} onClick={() => copyForPrint(false)}>
                 {copiedBtn === 'summary' ? '✓ คัดลอกแล้ว' : '📋 คัดลอก (สรุป)'}
               </button>
-              <button className="btn btn-ghost btn-sm" onClick={() => setShowTrack((v) => !v)}>📦 ใส่เลขพัสดุ</button>
+              <button className="btn btn-ghost btn-sm" disabled={!isRound} title={isRound ? '' : 'ใช้ได้ทีละรอบ — เลือกรอบส่งก่อน'} onClick={() => setShowTrack((v) => !v)}>📦 ใส่เลขพัสดุ</button>
               <button className="btn btn-ghost btn-sm" onClick={printLabels}>🖨️ ปริ้นใบปะหน้า</button>
-              <button className="btn btn-ghost btn-sm" onClick={clearRound}>🗑️ ล้างรอบนี้</button>
+              <button className="btn btn-ghost btn-sm" disabled={!isRound} title={isRound ? 'ต้องใส่รหัสเจ้าของ' : 'ใช้ได้ทีละรอบ — เลือกรอบส่งก่อน'} onClick={clearRound}>🗑️ ล้างรอบนี้ 🔒</button>
             </div>
           </div>
 
-          {showTrack && (
+          <div className="search-row no-print">
+            <input
+              className="search-input"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="🔍 ค้นหาทุกรอบ — ชื่อ / แอค TikTok / เบอร์ (4 ตัวท้ายก็ได้) / เลขพัสดุ"
+            />
+            {searching && <button className="btn btn-ghost btn-sm" onClick={() => setSearch('')}>✕ ล้างคำค้น</button>}
+          </div>
+
+          {isMonth && monthGroup && !searching && (
+            <div className="month-box no-print">
+              <div className="month-sum">
+                📅 เดือน{monthGroup.label}: <b>{monthGroup.count.toLocaleString()}</b> ออเดอร์ · <b>{monthGroup.qty.toLocaleString()}</b> ชุด · มีกาว 401 <b>{glueCount.toLocaleString()}</b> ออเดอร์
+              </div>
+              <div className="month-rounds">
+                {monthRounds.map((r) => (
+                  <button key={r.d} className="month-round" onClick={() => setFilterDate(r.d)} title="เปิดรอบนี้">
+                    <b>{r.d}</b> {r.count} ออเดอร์ · {r.qty.toLocaleString()} ชุด
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {showTrack && isRound && (
             <div className="copy-box no-print">
               <div className="copy-head">
                 <span>วางลิสต์เลขพัสดุ — Flash (เลข + ชื่อ + เบอร์) หรือ ไปรษณีย์ไทย (ชื่อ TikTok + เลข)</span>
@@ -946,21 +1170,27 @@ export default function SnailOrderForm() {
           {visible.length === 0 ? (
             <div className="empty">
               <img src={LOGO} alt="Snail Shop" style={{ width: 140, maxWidth: '60%', display: 'block', margin: '0 auto 8px', opacity: 0.85 }} />
-              ยังไม่มีออเดอร์ในรอบนี้ — กรอกฟอร์มด้านซ้าย หรือเลือกรอบส่งอื่น
+              {searching ? 'ไม่เจอออเดอร์ที่ตรงกับคำค้น' : 'ยังไม่มีออเดอร์ในรอบนี้ — กรอกฟอร์มด้านซ้าย หรือเลือกรอบส่งอื่น'}
             </div>
           ) : (
             <div className="table-scroll">
               <table>
                 <thead>
                   <tr>
-                    <th>ชื่อ TikTok</th><th>จำนวน</th><th>หมายเหตุ</th><th>วันส่ง</th>
+                    <th className="th-sort th-order" onClick={() => sortBy('created')} title="เรียงตามลำดับที่กรอก">
+                      # <span className="sort-arrow">{sort.key === 'created' ? (sort.dir === 'desc' ? '▼' : '▲') : '⇅'}</span>
+                    </th>
+                    <SortTh k="tiktok">ชื่อ TikTok</SortTh><SortTh k="qty">จำนวน</SortTh><th>หมายเหตุ</th><th>วันส่ง</th>
                     <th>ชื่อจริง</th><th>ที่อยู่</th><th>เบอร์</th>
-                    <th className="no-print">สถานะ</th><th className="no-print">ลิงก์</th><th className="no-print"></th>
+                    <SortTh k="status">สถานะ</SortTh><th className="no-print">ลิงก์</th><th className="no-print"></th>
                   </tr>
                 </thead>
                 <tbody>
-                  {visible.map((o, i) => (
-                    <tr key={o.id ?? i}>
+                  {tableRows.map((o, i) => {
+                    const warns = warnsOf(o)
+                    return (
+                    <tr key={o.id ?? i} className={warns.length ? 'row-warn' : ''}>
+                      <td className="c-order" title="ลำดับที่กรอก (1 = เก่าสุด)">{(created.get(o.id) ?? 0) + 1}</td>
                       <td className="acc">
                         <input className="cell-input" value={o.tiktok || ''} placeholder="—"
                           onChange={(e) => updateField(o.id, 'tiktok', e.target.value)}
@@ -980,6 +1210,14 @@ export default function SnailOrderForm() {
                             🚚 {carrierOf(o.tracking)} · เช็กสถานะ ↗
                           </a>
                         )}
+                        <button type="button" className="hist-link" onClick={() => setHistoryOf(historyFor(o))} title="ดูประวัติการสั่ง (นับจากเบอร์)">👤 ประวัติ</button>
+                        {warns.length > 0 && (
+                          <div className="warn-tags">
+                            {warns.map((w) => (
+                              <span key={w} className="warn-tag">⚠️ {w}</span>
+                            ))}
+                          </div>
+                        )}
                       </td>
                       <td>
                         <input className="cell-input cell-qty" type="number" min="1" value={o.qty}
@@ -996,7 +1234,7 @@ export default function SnailOrderForm() {
                           onChange={(e) => updateField(o.id, 'date', e.target.value)}
                           onFocus={(e) => cellFocus(o.id, 'date', e.target.value)} onBlur={(e) => cellBlur(o.id, 'date', e.target.value)} />
                       </td>
-                      <td>
+                      <td className="c-name">
                         <input className="cell-input" value={o.name || ''} placeholder="—"
                           onChange={(e) => updateField(o.id, 'name', e.target.value)}
                           onFocus={(e) => cellFocus(o.id, 'name', e.target.value)} onBlur={(e) => cellBlur(o.id, 'name', e.target.value)} />
@@ -1006,7 +1244,7 @@ export default function SnailOrderForm() {
                           onChange={(e) => updateField(o.id, 'addr', e.target.value)}
                           onFocus={(e) => cellFocus(o.id, 'addr', e.target.value)} onBlur={(e) => cellBlur(o.id, 'addr', e.target.value)} />
                       </td>
-                      <td>
+                      <td className="c-phone">
                         <input className="cell-input" value={o.phone || ''} placeholder="—"
                           onChange={(e) => updateField(o.id, 'phone', e.target.value)}
                           onFocus={(e) => cellFocus(o.id, 'phone', e.target.value)} onBlur={(e) => cellBlur(o.id, 'phone', e.target.value)} />
@@ -1025,12 +1263,14 @@ export default function SnailOrderForm() {
                         <button className="icon-btn" title="ลบ" onClick={() => del(o)}>✕</button>
                       </td>
                     </tr>
-                  ))}
+                    )
+                  })}
                 </tbody>
                 <tfoot>
                   <tr>
-                    <td>รวมรอบนี้</td>
-                    <td className="qty">{total}</td>
+                    <td></td>
+                    <td>{isRound ? 'รวมรอบนี้' : 'รวม'}</td>
+                    <td className="qty">{total.toLocaleString()}</td>
                     <td colSpan={8}>ชุด</td>
                   </tr>
                 </tfoot>
@@ -1091,6 +1331,73 @@ export default function SnailOrderForm() {
               </a>
             </div>
             <p className="mini-clear" style={{ marginTop: 12 }} onClick={() => setLinkModal(null)}>ปิด</p>
+          </div>
+        </div>
+      )}
+      {/* ===== POPUP รหัสเจ้าของ ก่อนล้างรอบ ===== */}
+      {ownerModal && (
+        <div className="modal-bg no-print" onClick={() => !ownerBusy && setOwnerModal(null)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-title">🔒 ล้างรอบส่ง {ownerModal.label}</div>
+            <p style={{ fontSize: 14, marginBottom: 12 }}>
+              จะลบออเดอร์ <b>{ownerModal.ids.length} รายการ</b> แบบถาวร (กู้คืนไม่ได้)
+              <br />ต้องใส่<b>รหัสผ่านของเจ้าของ</b>ก่อนนะคะ
+            </p>
+            <input
+              type="password"
+              value={ownerPw}
+              onChange={(e) => { setOwnerPw(e.target.value); setOwnerMsg('') }}
+              onKeyDown={(e) => { if (e.key === 'Enter') confirmClearRound() }}
+              placeholder="รหัสผ่านเจ้าของ"
+              autoComplete="off"
+              autoFocus
+              style={{ marginBottom: 10 }}
+            />
+            {ownerMsg && <p style={{ fontSize: 13, marginBottom: 10, color: 'var(--pink-deep)' }}>{ownerMsg}</p>}
+            <button className="btn btn-primary" style={{ width: '100%' }} onClick={confirmClearRound} disabled={ownerBusy}>
+              {ownerBusy ? 'กำลังตรวจรหัส...' : `🗑️ ลบ ${ownerModal.ids.length} รายการ`}
+            </button>
+            <p className="mini-clear" style={{ marginTop: 12 }} onClick={() => !ownerBusy && setOwnerModal(null)}>ยกเลิก</p>
+          </div>
+        </div>
+      )}
+      {/* ===== POPUP ประวัติลูกค้า ===== */}
+      {historyOf && (
+        <div className="modal-bg no-print" onClick={() => setHistoryOf(null)}>
+          <div className="modal-card modal-wide" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-title">👤 ประวัติลูกค้า</div>
+            <div style={{ fontSize: 14, marginBottom: 4 }}>
+              <b>{historyOf.who}</b> {historyOf.phone ? `· ${historyOf.phone}` : ''}
+            </div>
+            {!historyOf.byPhone && (
+              <div className="warn-tag" style={{ display: 'inline-block', marginBottom: 6 }}>⚠️ ออเดอร์นี้ไม่มีเบอร์ — นับจากแอค TikTok แทน</div>
+            )}
+            <div className="hist-sum">
+              สั่ง <b>{historyOf.list.length}</b> ครั้ง · รวม <b>{historyOf.qty.toLocaleString()}</b> ชุด · ครั้งแรก {historyOf.first} · ล่าสุด {historyOf.last}
+            </div>
+            {historyOf.accounts.length > 1 && (
+              <div className="hist-accs">ใช้ {historyOf.accounts.length} แอค: {historyOf.accounts.join(', ')}</div>
+            )}
+            <div className="table-scroll" style={{ maxHeight: 340, overflowY: 'auto' }}>
+              <table className="hist-table">
+                <thead>
+                  <tr><th>วันส่ง</th><th>แอค TikTok</th><th>จำนวน</th><th>หมายเหตุ</th><th>สถานะ</th><th>เลขพัสดุ</th></tr>
+                </thead>
+                <tbody>
+                  {historyOf.list.map((x) => (
+                    <tr key={x.id}>
+                      <td>{x.date || 'ฝาก'}</td>
+                      <td>{x.tiktok || '-'}</td>
+                      <td className="qty">{x.qty}</td>
+                      <td>{x.note || '-'}</td>
+                      <td>{x.status || '-'}</td>
+                      <td style={{ fontFamily: 'monospace', fontSize: 12 }}>{x.tracking || '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="mini-clear" style={{ marginTop: 12 }} onClick={() => setHistoryOf(null)}>ปิด</p>
           </div>
         </div>
       )}
