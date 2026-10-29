@@ -83,6 +83,8 @@ export function ArtisanBills({ jobs, artById, say, refresh, onOpen, onBack }) {
   const [month, setMonth] = useState(new Date().toISOString().slice(0, 7))
   const [busy, setBusy] = useState('')
   const [docNo, setDocNo] = useState({})
+  const [pasteOpen, setPasteOpen] = useState(false)
+  const [pasteText, setPasteText] = useState('')
 
   const bills = jobs
     .flatMap((j) => (j.job_payments || []).map((p) => ({ p, j, a: artById[j.artisan_id] })))
@@ -147,7 +149,8 @@ export function ArtisanBills({ jobs, artById, say, refresh, onOpen, onBack }) {
     if (!todo.length) return say('ทุกบิลเดือนนี้ลง Flow แล้ว', false)
     const text =
       `ลงค่าใช้จ่าย FlowAccount — บิลจ่ายช่าง ${monthLabel(month)} (${todo.length} บิล · 1 บิล = 1 เอกสาร · จ่ายแล้ว)\n` +
-      [HEAD.slice(0, 10), ...todo.map((x) => row(x).slice(0, 10))].map((r) => r.join('\t')).join('\n')
+      [['รหัสบิล', ...HEAD.slice(0, 10)], ...todo.map((x) => ['B' + x.p.id, ...row(x).slice(0, 10)])].map((r) => r.join('\t')).join('\n') +
+      `\n\nลงเสร็จหรือเจอเอกสารเดิมแล้ว ให้ตอบกลับเป็นบรรทัด "รหัสบิล เลขEXP" เช่น B12 EXP2026100001 (ไว้วางกลับในเว็บ)`
     try {
       await navigator.clipboard.writeText(text)
       say(`📋 คัดลอก ${todo.length} บิลแล้ว — วางในแชท Claude ได้เลย`)
@@ -165,6 +168,32 @@ export function ArtisanBills({ jobs, artById, say, refresh, onOpen, onBack }) {
     await refresh(x.j.id)
     say('✅ ติ๊กลง Flow แล้ว')
   }
+  // วางผลจาก Claude: บรรทัดละ "B<รหัสบิล> EXP..." → ติ๊กลง Flow ทีเดียวหลายบิล
+  const allBills = jobs.flatMap((j) => (j.job_payments || []).map((p) => ({ p, j, a: artById[j.artisan_id] })))
+  const pasted = [...pasteText.matchAll(/B(\d+)\D{0,12}?(EXP\d{6,})/gi)]
+    .map((m) => ({ x: allBills.find((b) => String(b.p.id) === m[1]), no: m[2].toUpperCase(), id: m[1] }))
+  async function applyPaste() {
+    const ok = pasted.filter((r) => r.x)
+    if (!ok.length) return say('ไม่เจอรหัสบิลที่ตรงกัน — ต้องเป็นบรรทัดแบบ B12 EXP2026100001', false)
+    const lines = ok.map((r) => `${ddmm(r.x.p.paid_on)} ${artisanShort(r.x.a)} ${baht(r.x.p.amount)} ฿ → ${r.no}${r.x.p.flow_doc ? ` (เดิม ${r.x.p.flow_doc})` : ''}`)
+    if (!window.confirm(`บันทึกเลข Flow ${ok.length} บิลนี้ใช่ไหม?\n\n${lines.join('\n')}`)) return
+    setBusy('paste')
+    try {
+      for (const r of ok) {
+        const { error } = await supabase.from('job_payments').update({ flow_doc: r.no, flow_at: new Date().toISOString() }).eq('id', r.x.p.id)
+        if (error) throw error
+      }
+      for (const jid of [...new Set(ok.map((r) => r.x.j.id))]) await refresh(jid)
+      setPasteText('')
+      setPasteOpen(false)
+      say(`✅ ติ๊กลง Flow แล้ว ${ok.length} บิล`)
+    } catch (e) {
+      say('บันทึกไม่สำเร็จ: ' + e.message, false)
+    } finally {
+      setBusy('')
+    }
+  }
+
   async function unmarkFlow(x) {
     if (!window.confirm(`ยกเลิกสถานะ "ลง Flow แล้ว" ของบิลนี้ใช่ไหม?`)) return
     const { error } = await supabase.from('job_payments').update({ flow_doc: '', flow_at: null }).eq('id', x.p.id)
@@ -188,6 +217,22 @@ export function ArtisanBills({ jobs, artById, say, refresh, onOpen, onBack }) {
           <button className="btn btn-ghost btn-sm" onClick={exportZip} disabled={!!busy}>{busy === 'zip' ? 'กำลังโหลด...' : '⬇ สลิปทั้งเดือน (.zip)'}</button>
         </div>
         <button className="btn btn-rose btn-sm" style={{ width: '100%', marginTop: 8 }} onClick={copyForClaude}>📋 คัดลอกบิลที่ยังไม่ลง Flow (ให้ Claude สร้างเอกสาร)</button>
+        <button className="btn btn-ghost btn-sm" style={{ width: '100%', marginTop: 8 }} onClick={() => setPasteOpen(!pasteOpen)}>📥 วางเลข Flow จาก Claude</button>
+        {pasteOpen && (
+          <div style={{ marginTop: 8 }}>
+            <textarea rows={4} value={pasteText} onChange={(e) => setPasteText(e.target.value)} placeholder={'วางข้อความที่ Claude ตอบกลับ เช่น\nB12 EXP2026100118\nB15 EXP2026090114'} style={{ width: '100%', fontSize: 14 }} />
+            {pasted.length > 0 && (
+              <div className="jb-small" style={{ margin: '6px 0' }}>
+                {pasted.map((r, i) => (
+                  <div key={i}>{r.x ? `✓ ${ddmm(r.x.p.paid_on)} ${artisanShort(r.x.a)} ${baht(r.x.p.amount)} ฿ → ${r.no}` : `✗ B${r.id} ไม่เจอบิลนี้`}</div>
+                ))}
+              </div>
+            )}
+            <button className="btn btn-rose btn-sm" style={{ width: '100%' }} disabled={!!busy || !pasted.some((r) => r.x)} onClick={applyPaste}>
+              {busy === 'paste' ? 'กำลังบันทึก...' : `✔ บันทึก ${pasted.filter((r) => r.x).length} บิล`}
+            </button>
+          </div>
+        )}
       </div>
 
       {bills.length === 0 && <div className="jb-card"><p className="jb-muted">เดือนนี้ยังไม่มีบิลจ่าย</p></div>}
@@ -200,7 +245,7 @@ export function ArtisanBills({ jobs, artById, say, refresh, onOpen, onBack }) {
             <span style={{ fontFamily: 'Itim', color: 'var(--pink-deep)' }}>{baht(x.p.amount)} ฿</span>
           </div>
           <div className="jb-small">
-            {x.p.kind} · {x.a?.name || ''}{x.a?.code ? ` (${x.a.code})` : ''} · ใบงาน {x.j.code}
+            B{x.p.id} · {x.p.kind} · {x.a?.name || ''}{x.a?.code ? ` (${x.a.code})` : ''} · ใบงาน {x.j.code}
           </div>
           <div className="jb-row" style={{ marginTop: 6 }}>
             {x.p.slip_path ? (
