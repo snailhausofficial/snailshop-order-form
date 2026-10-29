@@ -576,12 +576,24 @@ export default function SnailOrderForm() {
   })
 
   async function loadOrders(pickLatest) {
-    const { data, error } = await supabase.from(TABLE).select('*').order('created_at', { ascending: true })
-    if (error) {
-      setFlash({ msg: 'โหลดข้อมูลจากฐานข้อมูลไม่ได้: ' + error.message, ok: false })
-      return
+    // Supabase ส่งได้ครั้งละไม่เกิน 1,000 แถว (ตั้ง Max rows ไว้) → โหลดทีละหน้าต่อกันจนครบ
+    const PAGE = 1000
+    const all = []
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await supabase
+        .from(TABLE)
+        .select('*')
+        .order('created_at', { ascending: true })
+        .order('id', { ascending: true })
+        .range(from, from + PAGE - 1)
+      if (error) {
+        setFlash({ msg: 'โหลดข้อมูลจากฐานข้อมูลไม่ได้: ' + error.message, ok: false })
+        return
+      }
+      all.push(...(data || []))
+      if (!data || data.length < PAGE) break
     }
-    const rows = (data || []).map(fromRow)
+    const rows = all.map(fromRow)
     setOrders(rows)
     // ค่าเริ่มต้น: เลือกรอบส่งล่าสุด (จะได้ไม่ปนวันอื่น)
     const latest = rows.length ? rows[rows.length - 1].date : ''
