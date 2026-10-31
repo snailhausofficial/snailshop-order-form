@@ -155,3 +155,8 @@
 .jb-paidoff{display:flex;gap:8px;align-items:flex-start;margin-top:10px;padding:10px;border-radius:10px;background:#E5F4E7;
   color:#22612E;font-weight:400;font-size:14px;cursor:pointer}
 .jb-paidoff input{width:auto;margin-top:3px}
+
+/* ใบที่เสร็จแล้ว: รวมไว้ล่างสุด พับได้ */
+.jb-done-toggle{width:100%;margin:14px 0 8px;padding:11px 12px;border-radius:12px;border:1.5px dashed #BFE5D0;
+  background:#F3FBF6;color:#22612E;font-family:'Itim',sans-serif;font-size:14px;cursor:pointer;text-align:left}
+.jb-job-done{opacity:.72;background:#FCFCFB}
