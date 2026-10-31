@@ -387,7 +387,6 @@ export default function ArtisanJobs() {
 const FILTERS = [
   ['open', 'ยังไม่จบ'],
   ['late', 'เลยกำหนด'],
-  ['unpaid', 'ยังไม่โอน'],
   ['pending', 'ค้างส่งตาม'],
   ['topay', 'รอจ่าย'],
   ['done', 'เสร็จแล้ว'],
