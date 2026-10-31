@@ -71,6 +71,15 @@ export function jobTotals(job) {
   return { qty, itemsAmount, ship, amount, paidReal, anyRecv, recvQty, damaged, goodAmount, paid, balance: r2(amount - paid), designs }
 }
 
+// ใบงาน "เสร็จแล้ว" = รับ/ตรวจแล้ว + จ่ายครบ (หรือจ่ายนอกระบบ) + ไม่มีของค้างส่งตาม
+export function isDone(j) {
+  if (pendingOf(j) > 0) return false
+  if (j.status === 'จ่ายเงินแล้ว') return true
+  if (statusIdx(j.status) < 3) return false
+  const t = jobTotals(j)
+  return !!j.paid_offsystem || (t.amount > 0 && t.balance <= 0)
+}
+
 /* ---------- รูป: ย่อให้เล็กก่อนอัป (ประหยัดเน็ต + พื้นที่) ---------- */
 async function shrinkImage(file) {
   if (!/^image\/(jpeg|png|webp|heic|heif)$/.test(file.type || '')) return file
@@ -114,7 +123,7 @@ function jobFlags(job, artisan) {
   const si = statusIdx(job.status)
   const t = jobTotals(job)
   const today = todayIso()
-  if (artisan && !artisan.id_card_ok) f.push({ t: 'ยังไม่มีบัตร ปชช.', c: 'rd' })
+  // บัตร ปชช. แสดงที่หน้า "รายชื่อช่าง" เท่านั้น (ไม่รกหน้ารายการ)
   if (artisan && artisan.in_flow === false) f.push({ t: 'ยังไม่มีใน Flow', c: 'am' })
   if (si < 2 && job.due_date && job.due_date < today) f.push({ t: '⏰ เลยกำหนด ' + ddmm(job.due_date), c: 'rd' })
   else if (si < 2 && !hasShipped(job) && job.due_date && job.due_date <= addDays(today, 1)) f.push({ t: '⏰ ' + relDue(job.due_date) + ' · ยังไม่ส่ง', c: 'am' })
@@ -381,25 +390,28 @@ const FILTERS = [
   ['unpaid', 'ยังไม่โอน'],
   ['pending', 'ค้างส่งตาม'],
   ['topay', 'รอจ่าย'],
-  ['done', 'จ่ายเงินแล้ว'],
+  ['done', 'เสร็จแล้ว'],
   ['all', 'ทั้งหมด'],
 ]
 
 function JobList({ jobs: allJobs, artById, artisans, filter, setFilter, q, setQ, onOpen, onNew, onArtisans, onReceive, onDaily, onBills, month, setMonth }) {
   const today = todayIso()
   // แยกรายเดือน (ตามวันสั่งงาน) + ใบที่ยังไม่จบจากเดือนก่อนยกมาด้วย
-  const isOpenJob = (j) => (j.status !== 'จ่ายเงินแล้ว' && !j.paid_offsystem) || pendingOf(j) > 0
-  const carried = (j) => monthOf(j.order_date) < month && isOpenJob(j)
+  const [showDone, setShowDone] = useState(false)
+  // ใบที่เสร็จแล้วอยู่ในเดือนของมันเท่านั้น และไปรวมไว้ล่างสุด (พับไว้)
+  const carried = (j) => monthOf(j.order_date) < month && !isDone(j)
   const jobs = allJobs.filter((j) => monthOf(j.order_date) === month || carried(j))
   const test = {
-    open: (j) => j.status !== 'จ่ายเงินแล้ว',
+    open: (j) => !isDone(j),
     late: (j) => statusIdx(j.status) < 2 && j.due_date && j.due_date < today,
-    unpaid: (j) => j.status !== 'จ่ายเงินแล้ว' && !j.paid_offsystem && jobTotals(j).paid <= 0,
+    unpaid: (j) => !isDone(j) && !j.paid_offsystem && jobTotals(j).paid <= 0,
     pending: (j) => pendingOf(j) > 0,
-    topay: (j) => statusIdx(j.status) >= 2 && j.status !== 'จ่ายเงินแล้ว' && jobTotals(j).balance > 0,
-    done: (j) => j.status === 'จ่ายเงินแล้ว',
+    topay: (j) => statusIdx(j.status) >= 2 && !isDone(j) && jobTotals(j).balance > 0,
+    done: (j) => isDone(j),
     all: () => true,
   }
+  // 0 = ค้างจากเดือนก่อน · 1 = กำลังดำเนินการเดือนนี้ · 2 = เสร็จแล้ว (ล่างสุด)
+  const groupOf = (j) => (carried(j) ? 0 : isDone(j) ? 2 : 1)
   const counts = Object.fromEntries(FILTERS.map(([k]) => [k, jobs.filter(test[k]).length]))
   const needle = q.trim().toLowerCase()
   const shown = jobs
@@ -410,16 +422,9 @@ function JobList({ jobs: allJobs, artById, artisans, filter, setFilter, q, setQ,
       const hay = [a && artisanHay(a), j.code, j.brief, ...(j.job_items || []).map((i) => i.design)].join(' ').toLowerCase()
       return hay.includes(needle)
     })
-    .sort((x, y) => {
-      const cx = carried(x) ? 0 : 1
-      const cy = carried(y) ? 0 : 1
-      if (cx !== cy) return cx - cy
-      // งานยังไม่จบขึ้นก่อน แล้วเรียงตามกำหนดส่งใกล้สุด
-      const dx = x.status === 'จ่ายเงินแล้ว' ? 1 : 0
-      const dy = y.status === 'จ่ายเงินแล้ว' ? 1 : 0
-      if (dx !== dy) return dx - dy
-      return (x.due_date || '9999').localeCompare(y.due_date || '9999')
-    })
+    .sort((x, y) => groupOf(x) - groupOf(y) || (x.due_date || '9999').localeCompare(y.due_date || '9999'))
+  const doneCount = shown.filter((j) => groupOf(j) === 2).length
+  const doneOpen = showDone || filter === 'done'
 
   // ---------- ใกล้มาถึง: เลยกำหนด / ครบกำหนดวันนี้-พรุ่งนี้ / ช่างส่งของแล้ว กำลังมา ----------
   const RANK = { late: 0, soon: 1, coming: 2 }
@@ -490,14 +495,26 @@ function JobList({ jobs: allJobs, artById, artisans, filter, setFilter, q, setQ,
       {shown.map((j, n) => {
         const a = artById[j.artisan_id]
         const t = jobTotals(j)
-        const head = n === 0 || carried(shown[n - 1]) !== carried(j)
+        const g = groupOf(j)
+        const head = n === 0 || groupOf(shown[n - 1]) !== g
+        const done = isDone(j)
+        if (g === 2 && !doneOpen) {
+          return head ? (
+            <button key="done-toggle" className="jb-done-toggle" onClick={() => setShowDone(true)}>
+              ✅ เสร็จแล้วเดือนนี้ ({doneCount}) — กดเพื่อดู ▾
+            </button>
+          ) : null
+        }
         return (
           <div key={j.id}>
-          {head && <p className="jb-small" style={{ margin: '8px 2px 6px' }}>{carried(j) ? '⏳ ค้างจากเดือนก่อน' : '📅 ใบงานเดือนนี้'}</p>}
-          <button className="jb-job" onClick={() => onOpen(j.id)}>
+          {head && g === 2 && filter !== 'done' && (
+            <button className="jb-done-toggle" onClick={() => setShowDone(false)}>✅ เสร็จแล้วเดือนนี้ ({doneCount}) — ซ่อน ▴</button>
+          )}
+          {head && g !== 2 && <p className="jb-small" style={{ margin: '8px 2px 6px' }}>{g === 0 ? '⏳ ค้างจากเดือนก่อน' : '📅 ใบงานเดือนนี้ (ยังไม่จบ)'}</p>}
+          <button className={'jb-job' + (done ? ' jb-job-done' : '')} onClick={() => onOpen(j.id)}>
             <div className="jb-job-top">
               <span className="jb-name">{artisanShort(a)}</span>
-              <span className="tag pk" style={{ marginTop: 2 }}>{j.status}</span>
+              <span className={'tag ' + (done ? 'gr' : 'pk')} style={{ marginTop: 2 }}>{done ? '✓ เสร็จแล้ว' : j.status}</span>
             </div>
             {a?.facebook && <div className="jb-small">FB {a.facebook}</div>}
             <div className="jb-muted">
